@@ -82,6 +82,6 @@ Duplicate detection while building a unique index stringifies values into a `Set
 |---|--------|--------|
 | 1 | Fixed | `transaction(fn)` throws `transaction callback must be synchronous` when the callback returns a thenable, and rolls back. Test in `test/api.test.ts`. |
 | 2 | Fixed | `buildIndex` dedupes on the encoded key bytes (the identity the index uses), not `String(v)`. |
-| 3 | Fixed | See the commit "plan once per prepared statement"; parameters stay runtime values, Statement caches the compiled plan. Benchmark in that commit message. |
+| 3 | Fixed | Parameters stay runtime values (`ParamSlot` read by compiled closures, type-checked when the value arrives); `Statement` compiles once and re-plans only when `catalog.version` moves. Measured on 20k rows in memory: pk `get()` 31k → 54–71k/s, indexed join `get()` 14k → 35–41k/s; single-row `run()` unchanged within noise (1.3–2.5k/s either way, dominated by per-commit WAL work). |
 | 4 | Fixed | `db.verify()` returns `{ ok, problems, tables, indexes, rows, entries, pages }`: catalog roots and page types, heap chain + `last` pointer, B-tree structure, every index entry resolved against its row. Test plants a dangling entry. |
 | 5 | Partly stale | `.tmp/` is gitignored and never was in the repo. `docs/archive/` exists deliberately so `docs/DIRECTION.md` is the one current page; nothing further. |

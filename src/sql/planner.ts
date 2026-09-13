@@ -14,14 +14,23 @@ import type { Catalog, TableDef, IndexDef } from '../catalog.js';
 import type { Pager } from '../storage/pager.js';
 import { Heap } from '../storage/heap.js';
 import { BTree } from '../storage/btree.js';
-import { compareEncoded, TypeError_, type DataType } from '../types.js';
-import { Scope, compile, conjuncts, andAll, type Compiled } from './expr.js';
+import { compareEncoded, TypeError_, typeOfValue, type DataType } from '../types.js';
+import { Scope, compile, conjuncts, andAll, type Compiled, type ParamSlot } from './expr.js';
 
 /** Compile a predicate and insist it is boolean (PG: "argument of WHERE must be type boolean"). */
-function compileBool(e: Expr, scope: Scope, what: string): Compiled {
-  const c = compile(e, scope);
+function compileBool(e: Expr, scope: Scope, what: string, params?: ParamSlot): Compiled {
+  const c = compile(e, scope, params);
   if (c.type !== null && c.type !== 'BOOL') throw new TypeError_(`argument of ${what} must be type BOOL, not type ${c.type}`);
-  return c;
+  if (c.type !== null) return c;
+  // Type unknown at bind time (a bare parameter): enforce BOOL when the value arrives.
+  return {
+    ...c,
+    eval: (row) => {
+      const v = c.eval(row);
+      if (v !== null && typeof v !== 'boolean') throw new TypeError_(`argument of ${what} must be type BOOL, not type ${typeOfValue(v)}`);
+      return v;
+    },
+  };
 }
 import {
   type PlanNode,
@@ -53,7 +62,7 @@ export function openTree(pager: Pager, idx: IndexDef, keyType: DataType): BTree 
   return new BTree(pager, idx.metaPage, (a, b) => compareEncoded(keyType, a, b));
 }
 
-export function planSelect(stmt: SelectStmt, catalog: Catalog, pager: Pager): SelectPlan {
+export function planSelect(stmt: SelectStmt, catalog: Catalog, pager: Pager, params?: ParamSlot): SelectPlan {
   const scope = new Scope();
   const tableRefs: TableRef[] = stmt.from ? [stmt.from, ...stmt.joins.map((j) => j.table)] : [];
   const defs: TableDef[] = [];
@@ -74,23 +83,23 @@ export function planSelect(stmt: SelectStmt, catalog: Catalog, pager: Pager): Se
     const w = andAll(rest);
     if (w) {
       for (const p of preds) p.used = true;
-      root = new FilterNode(root, compileBool(w, scope, 'WHERE'), exprText(w));
+      root = new FilterNode(root, compileBool(w, scope, 'WHERE', params), exprText(w));
     }
   } else {
-    root = planScan(0, scope, defs, preds, pager);
+    root = planScan(0, scope, defs, preds, pager, params);
     for (let i = 1; i < tableRefs.length; i++) {
-      const inner = planScan(i, scope, defs, preds, pager);
+      const inner = planScan(i, scope, defs, preds, pager, params);
       const joinPreds = preds.filter((p) => !p.used && [...p.refs].every((r) => r <= i) && p.refs.has(i));
       for (const p of joinPreds) p.used = true;
       const q = andAll(joinPreds.map((p) => p.e));
       const combined = subScope(scope, i + 1);
-      root = new NestedLoopNode(root, inner, q ? compileBool(q, combined, 'JOIN/ON') : null, q ? exprText(q) : '');
+      root = new NestedLoopNode(root, inner, q ? compileBool(q, combined, 'JOIN/ON', params) : null, q ? exprText(q) : '');
     }
   }
   const leftovers = preds.filter((p) => !p.used).map((p) => p.e);
   if (leftovers.length) {
     const w = andAll(leftovers)!;
-    root = new FilterNode(root, compileBool(w, scope, 'WHERE'), exprText(w));
+    root = new FilterNode(root, compileBool(w, scope, 'WHERE', params), exprText(w));
   }
 
   // Select list is compiled before ORDER BY so ordinals and output aliases can refer to it.
@@ -110,14 +119,14 @@ export function planSelect(stmt: SelectStmt, catalog: Catalog, pager: Pager): Se
         });
       }
     } else {
-      exprs.push(compile(item.expr, scope));
+      exprs.push(compile(item.expr, scope, params));
       columns.push(item.alias ?? (item.expr.kind === 'column' ? item.expr.name : '?column?'));
       if (item.alias !== undefined) aliases.set(item.alias, [...(aliases.get(item.alias) ?? []), exprs.length - 1]);
     }
   }
 
   if (stmt.orderBy.length) {
-    const keys = stmt.orderBy.map((o) => ({ expr: resolveOrderBy(o.expr, exprs, aliases, scope), desc: o.desc }));
+    const keys = stmt.orderBy.map((o) => ({ expr: resolveOrderBy(o.expr, exprs, aliases, scope, params), desc: o.desc }));
     root = new SortNode(root, keys, stmt.orderBy.map((o) => exprText(o.expr) + (o.desc ? ' DESC' : '')).join(', '));
   }
   if (stmt.limit !== undefined || stmt.offset !== undefined) root = new LimitNode(root, stmt.limit, stmt.offset ?? 0);
@@ -126,7 +135,7 @@ export function planSelect(stmt: SelectStmt, catalog: Catalog, pager: Pager): Se
 }
 
 /** PG rules: an integer literal is a 1-based select-list ordinal; a bare name matching an output alias refers to it; else a FROM-scope expression. */
-function resolveOrderBy(e: Expr, exprs: Compiled[], aliases: Map<string, number[]>, scope: Scope): Compiled {
+function resolveOrderBy(e: Expr, exprs: Compiled[], aliases: Map<string, number[]>, scope: Scope, params?: ParamSlot): Compiled {
   if (e.kind === 'literal' && typeof e.value === 'number') {
     const n = e.value;
     if (!Number.isInteger(n) || n < 1 || n > exprs.length) throw new TypeError_(`ORDER BY position ${n} is not in select list`);
@@ -138,7 +147,7 @@ function resolveOrderBy(e: Expr, exprs: Compiled[], aliases: Map<string, number[
     if (hits && hits.length > 1) throw new TypeError_(`ORDER BY "${e.name}" is ambiguous`);
     if (hits) return exprs[hits[0]!]!;
   }
-  return compile(e, scope);
+  return compile(e, scope, params);
 }
 
 /** A scope containing only the first n entries (same offsets). */
@@ -154,7 +163,7 @@ function subScope(scope: Scope, n: number): Scope {
  * become an Index Scan; other i-only predicates become a Filter under it.
  * Mixed predicates that were not consumed as bounds are left for the join.
  */
-function planScan(i: number, scope: Scope, defs: TableDef[], preds: { e: Expr; refs: Set<number>; used: boolean }[], pager: Pager): PlanNode {
+function planScan(i: number, scope: Scope, defs: TableDef[], preds: { e: Expr; refs: Set<number>; used: boolean }[], pager: Pager, params?: ParamSlot): PlanNode {
   const table = defs[i]!;
   const entry = scope.entries[i]!;
   const heap = new Heap(pager, table.rootPage);
@@ -188,7 +197,7 @@ function planScan(i: number, scope: Scope, defs: TableDef[], preds: { e: Expr; r
       // The bound side must reference only outer tables (or nothing).
       const otherRefs = scope.refs(m.other);
       if (otherRefs.has(i)) continue;
-      const c = compile(m.other, outer);
+      const c = compile(m.other, outer, params);
       if (c.type !== null && c.type !== col.type) throw new TypeError_(`operator does not exist: ${col.type} ${m.op} ${c.type}`);
       const t = `${col.name} ${m.op} ${exprText(m.other)}`;
       if (m.op === '=') eq = eq ?? { c, p, t };
@@ -219,7 +228,7 @@ function planScan(i: number, scope: Scope, defs: TableDef[], preds: { e: Expr; r
   if (localPreds.length) {
     for (const p of localPreds) p.used = true;
     const w = andAll(localPreds.map((p) => p.e))!;
-    node = new FilterNode(node, compileBool(w, local, 'WHERE'), exprText(w));
+    node = new FilterNode(node, compileBool(w, local, 'WHERE', params), exprText(w));
   }
   return node;
 }

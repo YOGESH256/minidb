@@ -83,6 +83,8 @@ const types = (cols: ColumnDef[]) => cols.map((c) => c.type);
 
 export class Catalog {
   private tables = new Map<string, TableDef>();
+  /** Bumped on every schema change or reload; prepared statements re-plan when it moves. */
+  version = 0;
   private sysTables!: Heap;
   private sysColumns!: Heap;
   private sysIndexes!: Heap;
@@ -102,6 +104,7 @@ export class Catalog {
 
   /** (Re)read the catalog from disk. Call after rollback of any DDL. */
   load(): void {
+    this.version++;
     const meta = this.pager.getMeta();
     this.sysTables = new Heap(this.pager, meta.tablesRoot);
     this.sysColumns = new Heap(this.pager, meta.columnsRoot);
@@ -171,6 +174,7 @@ export class Catalog {
       seen.add(c.name);
     }
     if (columns.filter((c) => c.pk).length > 1) throw new CatalogError('multiple primary keys are not allowed');
+    this.version++;
     const id = this.pager.nextObjectId();
     const root = Heap.create(this.pager);
     this.sysTables.insert(encodeTuple(types(SYS_TABLES_COLS), [id, name, root]));
@@ -191,6 +195,7 @@ export class Catalog {
     if (t.system) throw new CatalogError('cannot index a system table');
     const ci = t.columns.findIndex((c) => c.name === column);
     if (ci < 0) throw new CatalogError(`column "${column}" does not exist`);
+    this.version++;
     const id = this.pager.nextObjectId();
     const metaPage = BTree.create(this.pager);
     this.sysIndexes.insert(encodeTuple(types(SYS_INDEXES_COLS), [id, name, t.id, column, metaPage, unique]));
@@ -202,6 +207,7 @@ export class Catalog {
   dropTable(name: string): TableDef {
     const t = this.mustGetTable(name);
     if (t.system) throw new CatalogError('cannot drop a system table');
+    this.version++;
     for (const r of this.sysTables.scan()) {
       const [id] = decodeTuple(types(SYS_TABLES_COLS), r.data) as [number];
       if (id === t.id) this.sysTables.delete(r.tid);
@@ -222,6 +228,7 @@ export class Catalog {
     const found = this.findIndex(name);
     if (!found) throw new CatalogError(`index "${name}" does not exist`);
     if (name.endsWith('_pkey')) throw new CatalogError('cannot drop a primary key index');
+    this.version++;
     for (const r of this.sysIndexes.scan()) {
       const [id] = decodeTuple(types(SYS_INDEXES_COLS), r.data) as [number];
       if (id === found.index.id) this.sysIndexes.delete(r.tid);

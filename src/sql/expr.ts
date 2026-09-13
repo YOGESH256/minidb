@@ -74,6 +74,15 @@ export class Scope {
   }
 }
 
+/**
+ * Values for `?` / `$name`, read at execution time. A Statement owns one slot
+ * and rewrites it before each run, so a compiled plan is reused across runs.
+ */
+export interface ParamSlot {
+  positional: readonly Value[] | null;
+  named: Readonly<Record<string, Value>> | null;
+}
+
 export interface Compiled {
   /** null = untyped NULL literal (adopts the other operand's type). */
   type: DataType | null;
@@ -97,10 +106,17 @@ function expectType(c: Compiled, want: DataType, what: string): void {
   if (c.type !== null && c.type !== want) throw new TypeError_(`argument of ${what} must be type ${want}, not type ${TYPE_NAME(c.type)}`);
 }
 
-export function compile(expr: Expr, scope: Scope): Compiled {
+export function compile(expr: Expr, scope: Scope, params?: ParamSlot): Compiled {
   switch (expr.kind) {
-    case 'param':
-      throw new TypeError_(`unbound parameter ${expr.name ? '$' + expr.name : '?'} (pass values via prepare().run/get/all)`);
+    case 'param': {
+      if (!params) throw new TypeError_(`unbound parameter ${expr.name ? '$' + expr.name : '?'} (pass values via prepare().run/get/all)`);
+      // Type unknown until run time (PG's "unknown" literal): adopts the other operand's type,
+      // and the operator guards below check the actual value's type on every evaluation.
+      const name = expr.name;
+      const index = expr.index;
+      const read = name !== undefined ? () => params.named![name]! : () => params.positional![index]!;
+      return { type: null, eval: read, isConst: true };
+    }
     case 'literal': {
       const v = expr.value;
       return { type: typeOfValue(v), eval: () => v, isConst: true };
@@ -111,30 +127,32 @@ export function compile(expr: Expr, scope: Scope): Compiled {
       return { type: r.type, eval: (row) => row[i]!, isConst: false, columnIndex: i };
     }
     case 'not': {
-      const c = compile(expr.expr, scope);
+      const c = compile(expr.expr, scope, params);
       expectType(c, 'BOOL', 'NOT');
-      return { type: 'BOOL', eval: (row) => notV(c.eval(row)), isConst: c.isConst };
+      return { type: 'BOOL', eval: (row) => notV(boolOrNull(c.eval(row), 'NOT')), isConst: c.isConst };
     }
     case 'neg': {
-      const c = compile(expr.expr, scope);
+      const c = compile(expr.expr, scope, params);
       expectType(c, 'INT', 'unary minus');
       return {
         type: 'INT',
         eval: (row) => {
           const v = c.eval(row);
-          return v === null ? null : checkInt(-(v as number));
+          if (v === null) return null;
+          if (typeof v !== 'number') throw new TypeError_(`operator does not exist: - ${typeOfValue(v)}`);
+          return checkInt(-v);
         },
         isConst: c.isConst,
       };
     }
     case 'isnull': {
-      const c = compile(expr.expr, scope);
+      const c = compile(expr.expr, scope, params);
       const neg = expr.negated;
       return { type: 'BOOL', eval: (row) => (c.eval(row) === null) !== neg, isConst: c.isConst };
     }
     case 'binary': {
-      const l = compile(expr.left, scope);
-      const r = compile(expr.right, scope);
+      const l = compile(expr.left, scope, params);
+      const r = compile(expr.right, scope, params);
       const isConst = l.isConst && r.isConst;
       switch (expr.op) {
         case 'AND':
@@ -144,9 +162,9 @@ export function compile(expr: Expr, scope: Scope): Compiled {
             type: 'BOOL',
             isConst,
             eval: (row) => {
-              const a = l.eval(row);
+              const a = boolOrNull(l.eval(row), 'AND');
               if (a === false) return false;
-              const b = r.eval(row);
+              const b = boolOrNull(r.eval(row), 'AND');
               if (b === false) return false;
               return a === null || b === null ? null : true;
             },
@@ -158,9 +176,9 @@ export function compile(expr: Expr, scope: Scope): Compiled {
             type: 'BOOL',
             isConst,
             eval: (row) => {
-              const a = l.eval(row);
+              const a = boolOrNull(l.eval(row), 'OR');
               if (a === true) return true;
-              const b = r.eval(row);
+              const b = boolOrNull(r.eval(row), 'OR');
               if (b === true) return true;
               return a === null || b === null ? null : false;
             },
@@ -173,6 +191,7 @@ export function compile(expr: Expr, scope: Scope): Compiled {
           const t = unify(l.type, r.type, expr.op);
           if (t !== null && t !== 'INT') throw new TypeError_(`operator does not exist: ${t} ${expr.op} ${t}`);
           const op = expr.op;
+          const loose = l.type === null || r.type === null; // a parameter is involved: check at run time
           return {
             type: 'INT',
             isConst,
@@ -180,6 +199,8 @@ export function compile(expr: Expr, scope: Scope): Compiled {
               const a = l.eval(row) as number | null;
               const b = r.eval(row) as number | null;
               if (a === null || b === null) return null;
+              if (loose && (typeof a !== 'number' || typeof b !== 'number'))
+                throw new TypeError_(`operator does not exist: ${typeOfValue(a)} ${op} ${typeOfValue(b)}`);
               switch (op) {
                 case '+':
                   return checkInt(a + b);
@@ -200,6 +221,7 @@ export function compile(expr: Expr, scope: Scope): Compiled {
         default: {
           const t = unify(l.type, r.type, expr.op);
           const op = expr.op;
+          const loose = l.type === null || r.type === null;
           return {
             type: 'BOOL',
             isConst,
@@ -207,7 +229,10 @@ export function compile(expr: Expr, scope: Scope): Compiled {
               const a = l.eval(row);
               const b = r.eval(row);
               if (a === null || b === null) return null;
-              const c = compareValues(t ?? typeOfValue(a)!, a, b);
+              const ta = typeOfValue(a)!;
+              if (loose && (ta !== typeOfValue(b) || (t !== null && ta !== t)))
+                throw new TypeError_(`operator does not exist: ${t ?? ta} ${op} ${typeOfValue(b)}`);
+              const c = compareValues(t ?? ta, a, b);
               switch (op) {
                 case '=':
                   return c === 0;
@@ -229,6 +254,12 @@ export function compile(expr: Expr, scope: Scope): Compiled {
       }
     }
   }
+}
+
+/** Run-time check for operands whose type was unknown at bind time (parameters). */
+function boolOrNull(v: Value, what: string): boolean | null {
+  if (v === null || typeof v === 'boolean') return v;
+  throw new TypeError_(`argument of ${what} must be type BOOL, not type ${typeOfValue(v)}`);
 }
 
 function notV(v: Value): Value {

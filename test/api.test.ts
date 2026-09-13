@@ -40,9 +40,9 @@ describe('prepared statements + parameters', () => {
     expect(() => db.prepare('SELECT 1; SELECT 2')).toThrow(/exactly one statement/);
     // a plain exec() with an unbound ? is an error, not silently NULL
     expect(() => db.exec('SELECT * FROM t WHERE id = ?')).toThrow(/unbound parameter/);
-    // params work in EXPLAIN and are printed as ?
+    // params work in EXPLAIN; the plan is built once, so it shows the placeholder, like PG's $1
     const plan = db.prepare('EXPLAIN SELECT * FROM t WHERE id = ?').all(1).map((r) => r['QUERY PLAN']).join('\n');
-    expect(plan).toMatch(/Index Cond: id = 1/);
+    expect(plan).toMatch(/Index Cond: id = \?/);
     db.close();
   });
 
@@ -94,6 +94,30 @@ describe('transaction(fn)', () => {
     expect(() => bad()).toThrow(/must be synchronous/);
     expect(db.inTransaction).toBe(false);
     expect(db.query('SELECT * FROM t').rows).toEqual([]); // the first insert was rolled back too
+    db.close();
+  });
+});
+
+describe('plan reuse', () => {
+  it('a prepared statement survives schema changes and rebinds params each run', () => {
+    const db = new Database(':memory:');
+    db.exec('CREATE TABLE t (id INT PRIMARY KEY, k INT)');
+    for (let i = 0; i < 300; i++) db.exec(`INSERT INTO t VALUES (${i}, ${i % 10})`);
+    const byK = db.prepare('SELECT id FROM t WHERE k = ? ORDER BY id LIMIT 2');
+    expect(byK.all(3)).toEqual([{ id: 3 }, { id: 13 }]);
+    expect(byK.all(7)).toEqual([{ id: 7 }, { id: 17 }]);
+    expect(db.prepare('EXPLAIN SELECT id FROM t WHERE k = ?').all(3)[0]!['QUERY PLAN']).toMatch(/Seq Scan/);
+    db.exec('CREATE INDEX t_k ON t (k)'); // schema change: cached plans must rebuild
+    expect(db.prepare('EXPLAIN SELECT id FROM t WHERE k = ?').all(3)[0]!['QUERY PLAN']).toMatch(/Index Scan using t_k/);
+    expect(byK.all(3)).toEqual([{ id: 3 }, { id: 13 }]);
+    // a rolled-back DDL also invalidates
+    db.exec('BEGIN; DROP TABLE t; ROLLBACK');
+    expect(byK.all(9)).toEqual([{ id: 9 }, { id: 19 }]);
+    // a wrong-typed value at run time is a type error, never a silent mismatch
+    expect(() => byK.all('x')).toThrow(/operator does not exist: INT = TEXT/);
+    expect(() => db.prepare('SELECT * FROM t WHERE k + ? > 1').all('x')).toThrow(/operator does not exist/);
+    expect(() => db.prepare('SELECT * FROM t WHERE ? AND k = 1').all(5)).toThrow(/must be type BOOL/);
+    expect(() => db.prepare('INSERT INTO t VALUES (?, ?)').run('a', 1)).toThrow(/is of type INT/);
     db.close();
   });
 });

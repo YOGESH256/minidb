@@ -7,6 +7,8 @@
  *   BEGIN/COMMIT/ROLLBACK → pager
  *
  * Each statement is its own transaction unless BEGIN is active.
+ * prepare() compiles a statement once; parameters are read from a slot at
+ * run time, so the plan is reused across runs (rebuilt if the schema changes).
  */
 import { Pager, type PagerOptions, type TraceEvent } from './storage/pager.js';
 import { memoryFileSystem, getDefaultFileSystem, type FileSystem } from './storage/file-io.js';
@@ -16,8 +18,8 @@ import { Catalog, CatalogError, type TableDef, type IndexDef } from './catalog.j
 import { parse } from './sql/parser.js';
 import type { Stmt, SelectStmt, InsertStmt, UpdateStmt, DeleteStmt, Expr } from './sql/ast.js';
 import { planSelect, openTree } from './sql/planner.js';
-import { Scope, compile } from './sql/expr.js';
-import { collect } from './sql/executor.js';
+import { Scope, compile, type ParamSlot } from './sql/expr.js';
+import { collect, type PlanNode } from './sql/executor.js';
 import { encodeTuple, decodeTuple, encodeValue, decodeValue, compareValues, TypeError_, typeOfValue, type Value } from './types.js';
 
 export interface QueryResult {
@@ -45,17 +47,45 @@ export type Params = readonly Value[] | Readonly<Record<string, Value>>;
 /** A row as an object keyed by output column name. Duplicate names: last one wins. */
 export type RowObject = Record<string, Value>;
 
-/** better-sqlite3-shaped prepared statement. Parsing happens once; binding per call. */
+/** What a compiled statement knows how to do once its parameter slot is filled. */
+interface Prepared {
+  run(): QueryResult;
+}
+
+/**
+ * better-sqlite3-shaped prepared statement. Parsing AND planning happen once;
+ * each run only rewrites the parameter slot the compiled plan reads from.
+ * Plans are rebuilt automatically if the schema changes underneath.
+ */
 export class Statement {
+  private readonly stmt: Stmt;
+  private readonly slot: ParamSlot = { positional: null, named: null };
+  private readonly positionalCount: number;
+  private readonly names: string[];
+  private readonly prepared: Prepared;
+
   constructor(
     private readonly db: Database,
-    private readonly stmts: Stmt[],
+    stmts: Stmt[],
     readonly source: string,
   ) {
     if (stmts.length !== 1) throw new TypeError_('prepare() expects exactly one statement');
+    this.stmt = stmts[0]!;
+    const meta = collectParams(this.stmt);
+    this.positionalCount = meta.positional;
+    this.names = meta.names;
+    this.prepared = db.compileStatement(this.stmt, this.slot);
   }
+
+  private bind(params: Params): void {
+    const s = slotFor(params, this.positionalCount, this.names);
+    this.slot.positional = s.positional;
+    this.slot.named = s.named;
+  }
+
   private exec(params: Params): QueryResult {
-    return this.db.runBound(this.stmts[0]!, params);
+    this.bind(params);
+    return this.db.runPrepared(this.stmt, this.prepared);
   }
   /** Run for its effect. Returns how many rows changed. */
   run(...params: Value[] | [Readonly<Record<string, Value>>]): { changes: number } {
@@ -88,63 +118,69 @@ function toObject(columns: string[], row: Value[]): RowObject {
   return o;
 }
 
-/** Replace every `?` / `$name` in a statement with a literal. */
-function bindParams(stmt: Stmt, params: Params): Stmt {
-  const positional = Array.isArray(params) ? (params as readonly Value[]) : null;
-  const named = positional ? null : (params as Readonly<Record<string, Value>>);
-  let used = 0;
-  const sub = (e: Expr): Expr => {
+/** How many `?` and which `$name`s a statement uses. */
+function collectParams(stmt: Stmt): { positional: number; names: string[] } {
+  let positional = 0;
+  const names: string[] = [];
+  const walk = (e: Expr | undefined): void => {
+    if (!e) return;
     switch (e.kind) {
-      case 'param': {
-        used++;
+      case 'param':
         if (e.name !== undefined) {
-          if (!named || !(e.name in named)) throw new TypeError_(`missing value for parameter $${e.name}`);
-          return { kind: 'literal', value: named[e.name]! };
-        }
-        if (!positional) throw new TypeError_('positional parameter ? given an object of named values');
-        if (e.index >= positional.length) throw new TypeError_(`too few parameter values: need at least ${e.index + 1}`);
-        return { kind: 'literal', value: positional[e.index]! };
-      }
+          if (!names.includes(e.name)) names.push(e.name);
+        } else positional++;
+        break;
       case 'binary':
-        return { ...e, left: sub(e.left), right: sub(e.right) };
+        walk(e.left);
+        walk(e.right);
+        break;
       case 'not':
       case 'neg':
       case 'isnull':
-        return { ...e, expr: sub(e.expr) };
+        walk(e.expr);
+        break;
       default:
-        return e;
+        break;
     }
   };
-  const optional = <T extends Expr | undefined>(e: T): T => (e ? (sub(e) as T) : e);
-  let out: Stmt;
   switch (stmt.kind) {
     case 'select':
-      out = {
-        ...stmt,
-        columns: stmt.columns.map((c) => (c.kind === 'expr' ? { ...c, expr: sub(c.expr) } : c)),
-        joins: stmt.joins.map((j) => ({ ...j, on: sub(j.on) })),
-        orderBy: stmt.orderBy.map((o) => ({ ...o, expr: sub(o.expr) })),
-        ...(stmt.where ? { where: sub(stmt.where) } : {}),
-      };
+      for (const c of stmt.columns) if (c.kind === 'expr') walk(c.expr);
+      for (const j of stmt.joins) walk(j.on);
+      for (const o of stmt.orderBy) walk(o.expr);
+      walk(stmt.where);
       break;
     case 'explain':
-      // The nested call does its own arity check; do not count again here.
-      return { kind: 'explain', stmt: bindParams(stmt.stmt, params) as SelectStmt };
+      return collectParams(stmt.stmt);
     case 'insert':
-      out = { ...stmt, rows: stmt.rows.map((r) => r.map(sub)) };
+      for (const r of stmt.rows) for (const e of r) walk(e);
       break;
     case 'update':
-      out = { ...stmt, assignments: stmt.assignments.map((a) => ({ ...a, expr: sub(a.expr) })), ...(stmt.where ? { where: sub(stmt.where) } : {}) };
+      for (const a of stmt.assignments) walk(a.expr);
+      walk(stmt.where);
       break;
     case 'delete':
-      out = { ...stmt, ...(stmt.where ? { where: sub(stmt.where) } : {}) };
+      walk(stmt.where);
       break;
     default:
-      out = stmt;
+      break;
   }
-  void optional;
-  if (positional && positional.length > used) throw new TypeError_(`too many parameter values: ${positional.length} given, ${used} used`);
-  return out;
+  return { positional, names };
+}
+
+/** Validate caller-supplied values against what the statement uses; build the slot. */
+function slotFor(params: Params, positionalCount: number, names: string[]): ParamSlot {
+  if (Array.isArray(params)) {
+    const p = params as readonly Value[];
+    if (names.length) throw new TypeError_(`missing value for parameter $${names[0]}`);
+    if (p.length < positionalCount) throw new TypeError_(`too few parameter values: need at least ${positionalCount}`);
+    if (p.length > positionalCount) throw new TypeError_(`too many parameter values: ${p.length} given, ${positionalCount} used`);
+    return { positional: p, named: null };
+  }
+  const named = params as Readonly<Record<string, Value>>;
+  if (positionalCount) throw new TypeError_('positional parameter ? given an object of named values');
+  for (const n of names) if (!(n in named)) throw new TypeError_(`missing value for parameter $${n}`);
+  return { positional: null, named };
 }
 
 /**
@@ -158,7 +194,6 @@ export class Database {
   readonly catalog: Catalog;
   private explicitTxn = false;
   private readonly unlock: () => void;
-  private readonly opts: DatabaseOptions;
   /** A statement failed inside BEGIN: only ROLLBACK (or COMMIT, which rolls back) is accepted. */
   private aborted = false;
 
@@ -166,7 +201,6 @@ export class Database {
     readonly path: string,
     opts: DatabaseOptions = {},
   ) {
-    this.opts = opts;
     const fs = opts.fs ?? (path === ':memory:' ? memoryFileSystem() : opts.openFile ? null : getDefaultFileSystem());
     this.unlock = fs ? fs.lock(path) : () => {};
     try {
@@ -185,14 +219,64 @@ export class Database {
 
   // ------------------------------------------------------------ prepared statements + transactions
 
-  /** Parse once, run many times with different values. */
+  /** Parse and plan once, run many times with different values. */
   prepare(sql: string): Statement {
     return new Statement(this, parse(sql), sql);
   }
 
-  /** Bind values then run one already-parsed statement. Used by Statement. */
-  runBound(stmt: Stmt, params: Params): QueryResult {
-    return this.runStatement(bindParams(stmt, params));
+  /**
+   * Compile a statement against the current schema. The returned object reads
+   * parameters from `slot` at run time and re-plans itself if the catalog
+   * version moves (CREATE/DROP/rollback). `slot` undefined = no parameters
+   * allowed (plain exec()).
+   */
+  compileStatement(stmt: Stmt, slot?: ParamSlot): Prepared {
+    const cached = <T>(build: () => T): (() => T) => {
+      let version = -1;
+      let value: T;
+      return () => {
+        if (version !== this.catalog.version) {
+          value = build();
+          version = this.catalog.version;
+        }
+        return value;
+      };
+    };
+    switch (stmt.kind) {
+      case 'select': {
+        const plan = cached(() => planSelect(stmt, this.catalog, this.pager, slot));
+        return {
+          run: () => {
+            const p = plan();
+            const rows = collect(p.root).map((r) => r.v);
+            return { command: 'SELECT', columns: p.columns, rows, rowCount: rows.length };
+          },
+        };
+      }
+      case 'explain': {
+        const plan = cached(() => planSelect(stmt.stmt, this.catalog, this.pager, slot));
+        return { run: () => ({ command: 'EXPLAIN', columns: ['QUERY PLAN'], rows: plan().root.explain().map((l) => [l]), rowCount: 0 }) };
+      }
+      case 'insert': {
+        const c = cached(() => this.compileInsert(stmt, slot));
+        return { run: () => c()() };
+      }
+      case 'update': {
+        const c = cached(() => this.compileUpdate(stmt, slot));
+        return { run: () => c()() };
+      }
+      case 'delete': {
+        const c = cached(() => this.compileDelete(stmt, slot));
+        return { run: () => c()() };
+      }
+      default:
+        return { run: () => this.dispatch(stmt) };
+    }
+  }
+
+  /** Run a compiled statement under the same transaction rules as exec(). Used by Statement. */
+  runPrepared(stmt: Stmt, prepared: Prepared): QueryResult {
+    return this.runStatement(stmt, prepared);
   }
 
   /**
@@ -226,15 +310,21 @@ export class Database {
    * fsync and index descent. Returns the events alongside the results.
    */
   trace(sql: string, params: Params = []): { results: QueryResult[]; events: TraceEvent[]; summary: TraceSummary } {
+    const stmts = parse(sql);
+    const hasParams = Array.isArray(params) ? params.length > 0 : Object.keys(params).length > 0;
     this.pager.startTrace();
-    let results: QueryResult[];
     try {
-      results = parse(sql).map((s) => this.runStatement(bindParams(s, params)));
-    } finally {
-      // fall through: events are collected below even on error
+      const results = stmts.map((s) => {
+        const meta = collectParams(s);
+        const slot = hasParams || meta.positional || meta.names.length ? slotFor(params, meta.positional, meta.names) : undefined;
+        return this.runStatement(s, this.compileStatement(s, slot));
+      });
+      const events = this.pager.stopTrace();
+      return { results, events, summary: summarize(events) };
+    } catch (e) {
+      this.pager.stopTrace();
+      throw e;
     }
-    const events = this.pager.stopTrace();
-    return { results, events, summary: summarize(events) };
   }
 
   /**
@@ -337,7 +427,8 @@ export class Database {
     return this.runStatement(stmts[0]!);
   }
 
-  private runStatement(stmt: Stmt): QueryResult {
+  /** Transaction rules around one statement: explicit block (with aborted state) or autocommit. */
+  private runStatement(stmt: Stmt, prepared?: Prepared): QueryResult {
     switch (stmt.kind) {
       case 'begin':
         if (this.explicitTxn) throw new TypeError_('there is already a transaction in progress');
@@ -362,10 +453,11 @@ export class Database {
         this.pager.checkpoint();
         return result('CHECKPOINT');
     }
+    const run = prepared ?? this.compileStatement(stmt);
     if (this.explicitTxn) {
       if (this.aborted) throw new TypeError_('current transaction is aborted, commands ignored until end of transaction block');
       try {
-        return this.dispatch(stmt);
+        return run.run();
       } catch (e) {
         // Keep the transaction open but poisoned; its partial effects live only
         // in the buffer pool and are discarded by the eventual rollback.
@@ -375,7 +467,7 @@ export class Database {
     }
     this.pager.begin();
     try {
-      const r = this.dispatch(stmt);
+      const r = run.run();
       this.pager.commit();
       return r;
     } catch (e) {
@@ -401,20 +493,9 @@ export class Database {
     if (!commit) this.catalog.load();
   }
 
+  /** DDL. Queries and DML go through compileStatement(). */
   private dispatch(stmt: Stmt): QueryResult {
     switch (stmt.kind) {
-      case 'select':
-        return this.select(stmt);
-      case 'explain': {
-        const plan = planSelect(stmt.stmt, this.catalog, this.pager);
-        return { command: 'EXPLAIN', columns: ['QUERY PLAN'], rows: plan.root.explain().map((l) => [l]), rowCount: 0 };
-      }
-      case 'insert':
-        return this.insert(stmt);
-      case 'update':
-        return this.update(stmt);
-      case 'delete':
-        return this.delete(stmt);
       case 'create_table':
         this.catalog.createTable(stmt.name, stmt.columns);
         return result('CREATE TABLE');
@@ -431,17 +512,9 @@ export class Database {
     }
   }
 
-  // ------------------------------------------------------------ SELECT
+  // ------------------------------------------------------------ INSERT / UPDATE / DELETE (compiled once, run many)
 
-  private select(stmt: SelectStmt): QueryResult {
-    const plan = planSelect(stmt, this.catalog, this.pager);
-    const rows = collect(plan.root).map((r) => r.v);
-    return { command: 'SELECT', columns: plan.columns, rows, rowCount: rows.length };
-  }
-
-  // ------------------------------------------------------------ INSERT
-
-  private insert(stmt: InsertStmt): QueryResult {
+  private compileInsert(stmt: InsertStmt, slot?: ParamSlot): () => QueryResult {
     const t = this.userTable(stmt.table);
     const targets = stmt.columns
       ? stmt.columns.map((name) => {
@@ -451,70 +524,75 @@ export class Database {
         })
       : t.columns.map((_, i) => i);
     if (new Set(targets).size !== targets.length) throw new TypeError_('column specified more than once');
-    const heap = new Heap(this.pager, t.rootPage);
     const empty = new Scope();
-    let n = 0;
-    for (const exprs of stmt.rows) {
+    const rows = stmt.rows.map((exprs) => {
       if (exprs.length !== targets.length) throw new TypeError_(`INSERT has ${exprs.length} expressions but ${targets.length} target columns`);
-      const values: Value[] = t.columns.map(() => null);
-      exprs.forEach((e, i) => {
-        const c = compile(e, empty);
-        const ci = targets[i]!;
-        const col = t.columns[ci]!;
+      return exprs.map((e, i) => {
+        const c = compile(e, empty, slot);
+        const col = t.columns[targets[i]!]!;
         if (c.type !== null && c.type !== col.type)
           throw new TypeError_(`column "${col.name}" is of type ${col.type} but expression is of type ${c.type}`);
-        values[ci] = c.eval([]);
+        return c;
       });
-      this.writeRow(t, heap, values, null);
-      n++;
-    }
-    return { ...result('INSERT'), rowCount: n };
+    });
+    const heap = new Heap(this.pager, t.rootPage);
+    return () => {
+      for (const exprs of rows) {
+        const values: Value[] = t.columns.map(() => null);
+        exprs.forEach((c, i) => (values[targets[i]!] = c.eval([])));
+        this.writeRow(t, heap, values, null);
+      }
+      return { ...result('INSERT'), rowCount: rows.length };
+    };
   }
 
-  // ------------------------------------------------------------ UPDATE / DELETE
-
-  private update(stmt: UpdateStmt): QueryResult {
+  private compileUpdate(stmt: UpdateStmt, slot?: ParamSlot): () => QueryResult {
     const t = this.userTable(stmt.table);
     const scope = new Scope();
     scope.add(t.name, t);
     const sets = stmt.assignments.map((a) => {
       const ci = t.columns.findIndex((c) => c.name === a.column);
       if (ci < 0) throw new TypeError_(`column "${a.column}" of relation "${t.name}" does not exist`);
-      const c = compile(a.expr, scope);
+      const c = compile(a.expr, scope, slot);
       const col = t.columns[ci]!;
       if (c.type !== null && c.type !== col.type)
         throw new TypeError_(`column "${col.name}" is of type ${col.type} but expression is of type ${c.type}`);
       return { ci, c };
     });
     if (new Set(sets.map((s) => s.ci)).size !== sets.length) throw new TypeError_('multiple assignments to same column');
-    // Collect first, then write (Halloween problem: an index scan must not
-    // see rows it just moved).
-    const targets = this.scanForDml(t, stmt.where);
+    const scan = this.planDml(t, stmt.where, slot);
     const heap = new Heap(this.pager, t.rootPage);
-    for (const row of targets) {
-      const values = [...row.v];
-      for (const s of sets) values[s.ci] = s.c.eval(row.v);
-      this.writeRow(t, heap, values, { tid: row.tid!, old: row.v });
-    }
-    return { ...result('UPDATE'), rowCount: targets.length };
+    return () => {
+      // Collect first, then write (Halloween problem: an index scan must not see rows it just moved).
+      const targets = collect(scan);
+      for (const row of targets) {
+        const values = [...row.v];
+        for (const s of sets) values[s.ci] = s.c.eval(row.v);
+        this.writeRow(t, heap, values, { tid: row.tid!, old: row.v });
+      }
+      return { ...result('UPDATE'), rowCount: targets.length };
+    };
   }
 
-  private delete(stmt: DeleteStmt): QueryResult {
+  private compileDelete(stmt: DeleteStmt, slot?: ParamSlot): () => QueryResult {
     const t = this.userTable(stmt.table);
-    const targets = this.scanForDml(t, stmt.where);
+    const scan = this.planDml(t, stmt.where, slot);
     const heap = new Heap(this.pager, t.rootPage);
-    for (const row of targets) {
-      this.removeIndexEntries(t, row.v, row.tid!);
-      heap.delete(row.tid!);
-    }
-    return { ...result('DELETE'), rowCount: targets.length };
+    return () => {
+      const targets = collect(scan);
+      for (const row of targets) {
+        this.removeIndexEntries(t, row.v, row.tid!);
+        heap.delete(row.tid!);
+      }
+      return { ...result('DELETE'), rowCount: targets.length };
+    };
   }
 
-  private scanForDml(t: TableDef, where: Expr | undefined): { v: Value[]; tid: TID | null }[] {
+  /** The scan that finds the rows UPDATE/DELETE will touch: same planner as SELECT *. */
+  private planDml(t: TableDef, where: Expr | undefined, slot?: ParamSlot): PlanNode {
     const sel: SelectStmt = { kind: 'select', columns: [{ kind: 'star' }], from: { name: t.name }, joins: [], orderBy: [] };
     if (where) sel.where = where;
-    const plan = planSelect(sel, this.catalog, this.pager);
-    return collect(plan.root);
+    return planSelect(sel, this.catalog, this.pager, slot).root;
   }
 
   // ------------------------------------------------------------ row + index maintenance
@@ -527,7 +605,7 @@ export class Database {
         if (col.notNull) throw new ConstraintError(`null value in column "${col.name}" of relation "${t.name}" violates not-null constraint`);
         return;
       }
-      if (typeOfValue(v) !== col.type) throw new TypeError_(`column "${col.name}" is of type ${col.type}`);
+      if (typeOfValue(v) !== col.type) throw new TypeError_(`column "${col.name}" is of type ${col.type} but expression is of type ${typeOfValue(v)}`);
     });
     const changed = (idx: IndexDef) => !prev || prev.old[idx.columnIndex] !== values[idx.columnIndex];
     for (const idx of t.indexes) {

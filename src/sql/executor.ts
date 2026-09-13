@@ -12,7 +12,7 @@
 import type { TID } from '../storage/heap.js';
 import { Heap } from '../storage/heap.js';
 import { BTree } from '../storage/btree.js';
-import { decodeTuple, encodeValue, compareValues, type DataType, type Value } from '../types.js';
+import { decodeTuple, encodeValue, compareValues, typeOfValue, TypeError_, type DataType, type Value } from '../types.js';
 import type { Compiled } from './expr.js';
 
 /**
@@ -107,6 +107,10 @@ export class IndexScanNode implements PlanNode {
     if (lo === null || hi === null) {
       this.it = [][Symbol.iterator]();
       return;
+    }
+    // A parameter's type is only known now: refuse a mismatch like the binder would.
+    for (const b of [lo, hi]) {
+      if (b !== undefined && typeOfValue(b) !== this.keyType) throw new TypeError_(`operator does not exist: ${this.keyType} = ${typeOfValue(b)}`);
     }
     const opts: Parameters<BTree['scan']>[0] = { loInclusive: this.bounds.loInclusive, hiInclusive: this.bounds.hiInclusive };
     if (lo !== undefined) opts.lo = encodeValue(this.keyType, lo);
