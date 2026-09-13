@@ -57,7 +57,7 @@ What a library user imports: `Database`, `Pager`, `Heap`, `BTree`, `Page`, `pars
 - `helpers.ts`: `FaultFS`, an in-memory file system where writes only become durable on `fsync`; `crash('drop'|'torn')` throws away or half-applies unsynced writes; `failNext` makes a chosen read/write/fsync throw; `corruptDurable` zeroes bytes on "disk".
 - `page.test.ts`, `pager.test.ts`, `heap-btree.test.ts`: unit tests per layer, including a 6,000-operation B-tree fuzz against a reference map.
 - `sql.test.ts`: end-to-end SQL behaviour.
-- `review-regressions.test.ts`: one test per finding in `review.md`.
+- `review-regressions.test.ts`: one test per finding in `docs/CODE-REVIEW-2026-09-09.md`.
 - `crash-child.ts` + `crash.test.ts`: a real child process committing batches on a real file, `SIGKILL`ed six times; every batch must be all-or-nothing afterwards.
 
 ## `video/`, `docs/`

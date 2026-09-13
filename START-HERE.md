@@ -39,7 +39,7 @@ Every file in `src/` starts with a picture and a plain-English paragraph. Read t
 ## Other material
 
 - `docs/explainer.html` — click each layer, step through one INSERT, pull the plug
-- `video/minidb-explained.mp4` — the same in 2 min 42 s
+- the video (2 min 42 s) on the [v0.1.0 release page](https://github.com/YOGESH256/minidb/releases/tag/v0.1.0); source and renderer in `video/`
 - `docs/HOW-WE-BUILT-IT.txt` — the story in prose
 - `docs/CODE-TOUR.md` — every file in one paragraph each
-- `review.md` — the ten bugs a code review found, and how each was fixed. Good for "what goes wrong in real engines".
+- `docs/CODE-REVIEW-2026-09-09.md` — the ten bugs a code review found, and how each was fixed. Good for "what goes wrong in real engines".

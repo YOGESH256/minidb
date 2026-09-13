@@ -128,8 +128,8 @@ function bindParams(stmt: Stmt, params: Params): Stmt {
       };
       break;
     case 'explain':
-      out = { kind: 'explain', stmt: bindParams(stmt.stmt, params) as SelectStmt };
-      break;
+      // The nested call does its own arity check; do not count again here.
+      return { kind: 'explain', stmt: bindParams(stmt.stmt, params) as SelectStmt };
     case 'insert':
       out = { ...stmt, rows: stmt.rows.map((r) => r.map(sub)) };
       break;

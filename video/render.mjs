@@ -8,7 +8,7 @@
  * Usage:
  *   node video/render.mjs                       # captions only
  *   PIPER=/path/to/piper PIPER_MODEL=/path/voice.onnx node video/render.mjs   # with voice
- *   PLAYWRIGHT_DIR=/path/to/node_modules/playwright (defaults to ../provue-backend)
+ *   PLAYWRIGHT_DIR=/path/to/node_modules/playwright (defaults to resolving 'playwright' from this package)
  */
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
@@ -57,9 +57,8 @@ const total = durations.reduce((a, b) => a + b, 0);
 console.log(`total ${total.toFixed(1)}s, ${Math.ceil(total * FPS)} frames`);
 
 // ---- 2. frames
-const pwDir = process.env.PLAYWRIGHT_DIR ?? path.resolve(here, '../../provue-backend/node_modules/playwright');
 const require = createRequire(import.meta.url);
-const { chromium } = require(pwDir);
+const { chromium } = require(process.env.PLAYWRIGHT_DIR ?? 'playwright'); // PLAYWRIGHT_DIR: path to an existing node_modules/playwright
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1 });
 await page.goto('file://' + path.join(here, 'scenes.html'));

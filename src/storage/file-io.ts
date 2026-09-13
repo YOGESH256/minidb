@@ -1,11 +1,11 @@
 /**
  * Minimal positional file interface. Both the data file and the WAL use it,
- * so tests can swap in a fault-injecting implementation and the browser
- * build can run entirely in memory.
+ * so tests can swap in a fault-injecting implementation and ':memory:'
+ * databases can run without touching the disk.
  *
  * This module has no Node imports on purpose. The real-disk implementation
- * lives in node-file-io.ts and registers itself via setDefaultFileSystem();
- * src/index.ts does that for Node users, src/browser.ts never does.
+ * lives in node-file-io.ts and registers itself via setDefaultFileSystem(),
+ * which src/index.ts calls for Node users.
  */
 export interface FileIO {
   read(position: number, length: number): Buffer;

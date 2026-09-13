@@ -68,7 +68,7 @@ Redo-only WAL with full-page images (SQLite's WAL framing, Postgres's record/LSN
 4. `ROLLBACK` drops the transaction's frames and rewinds the WAL; the data file never saw them.
 5. On open, page images up to the last COMMIT are replayed into the data file; anything after (a torn tail, a bad CRC) is discarded. Then the WAL is truncated. A zero-filled page inside the allocated range is reported as corruption rather than read as empty.
 
-Tested three ways: an in-process fault-injecting file system that drops or tears unsynced writes and can fail any read/write/fsync on demand (`test/helpers.ts`), a child process committing batches on a real file that gets `SIGKILL`ed at random moments six times (`test/crash.test.ts`), and one regression test per finding of the code review in `review.md` (`test/review-regressions.test.ts`).
+Tested three ways: an in-process fault-injecting file system that drops or tears unsynced writes and can fail any read/write/fsync on demand (`test/helpers.ts`), a child process committing batches on a real file that gets `SIGKILL`ed at random moments six times (`test/crash.test.ts`), and one regression test per finding of the code review in `docs/CODE-REVIEW-2026-09-09.md` (`test/review-regressions.test.ts`).
 
 ## Numbers (M-series laptop, 50k rows, 4 KB pages, 512-frame pool)
 
@@ -101,12 +101,28 @@ npm run build       # dist/
 npx tsx src/repl.ts some.db
 ```
 
-Library use:
+## Library API
 
 ```ts
-import { Database } from './src/index.js';
-const db = new Database('app.db');
+import { Database } from 'minidb';
+
+const db = new Database('app.db');          // or ':memory:'
 db.exec('CREATE TABLE t (id INT PRIMARY KEY, s TEXT)');
-db.query('SELECT * FROM t WHERE id = 1').rows;
+
+const ins = db.prepare('INSERT INTO t VALUES (?, ?)');   // ? positional, $name named
+ins.run(1, 'one');                                       // → { changes: 1 }
+db.prepare('SELECT s FROM t WHERE id = $id').get({ id: 1 }); // → { s: 'one' } | undefined
+db.prepare('SELECT * FROM t').all();                     // → row objects
+
+const move = db.transaction((from: number, to: number) => { /* runs inside BEGIN … COMMIT, rolls back on throw */ });
+
+db.trace('SELECT * FROM t WHERE id = ?', [1]);  // { results, events: [page reads, index hops, WAL, fsync…], summary }
+db.pageMap();                                    // what every page in the file is
 db.close();
 ```
+
+Values are bound, never interpolated. A file may have one owner at a time (`<file>.lock`; a second `Database` on the same path throws `DatabaseLockedError`; a lock left by a dead process is taken over). `exec(sql)` runs several statements; `query(sql)` one, returning `{ columns, rows }`.
+
+## Direction
+
+`docs/DIRECTION.md` is the single current statement of where this goes. `docs/EDGE-DIRECTION.md` and `docs/archive/` hold the research behind it.

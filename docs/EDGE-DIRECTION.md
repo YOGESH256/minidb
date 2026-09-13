@@ -1,6 +1,6 @@
 # minidb at the edge: SQL over any storage
 
-Status: research + proposal. No engine code changed for this direction. Written 2026-09-13.
+Status: research + proposal, narrowed by review (see `DIRECTION.md`): approved for a one-week prototype only, not the async rewrite. Cloudflare has since lifted the 3/10 MiB Worker limit to 64 MiB, so the bundle-size argument below is stale; wa-sqlite already offers async JS storage adapters, so "pluggable storage" is not unique either. Written 2026-09-13.
 
 ## 1. One paragraph
 

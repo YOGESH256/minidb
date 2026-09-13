@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
-# Convenience wrapper: narration via sherpa-onnx (see tts.py), frames via Playwright, stitch via ffmpeg.
+# Render video/minidb-explained.mp4: narration via sherpa-onnx (tts.py), frames via Playwright, stitch via ffmpeg.
+#
+# One-time setup (all open source):
+#   python3 -m venv .venv && .venv/bin/pip install sherpa-onnx
+#   curl -L -o vits.tar.bz2 https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-lessac-medium.tar.bz2
+#   tar xjf vits.tar.bz2            # → vits-piper-en_US-lessac-medium/
+#   npm i -D playwright && npx playwright install chromium   (or point PLAYWRIGHT_DIR at an existing install)
+#   brew install ffmpeg
+#
+# Then:  PY=.venv/bin/python MODEL=./vits-piper-en_US-lessac-medium bash video/render.sh
 set -euo pipefail
 cd "$(dirname "$0")"
-PY=${PY:-/private/tmp/claude-501/-Users-yogeshkhatri-provue-backend/c7733ba6-a41a-4558-abb0-6ad0873d53dd/scratchpad/piper-venv/bin/python}
-MODEL=${MODEL:-/private/tmp/claude-501/-Users-yogeshkhatri-provue-backend/c7733ba6-a41a-4558-abb0-6ad0873d53dd/scratchpad/vits-piper-en_US-lessac-medium}
+: "${PY:?set PY to a python with sherpa-onnx installed}"
+: "${MODEL:?set MODEL to an unpacked vits-piper-* directory}"
 cat > .tts-wrapper.sh <<W
 #!/usr/bin/env bash
 exec "$PY" "$(pwd)/tts.py" "\$@"

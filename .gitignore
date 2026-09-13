@@ -5,3 +5,4 @@ dist/
 .tmp/
 video/out/
 video/.tts-wrapper.sh
+video/*.mp4

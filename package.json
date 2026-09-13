@@ -2,8 +2,40 @@
   "name": "minidb",
   "version": "0.1.0",
   "description": "A small Postgres-shaped SQL database engine, from scratch in TypeScript",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YOGESH256/minidb.git"
+  },
+  "keywords": [
+    "database",
+    "sql",
+    "embedded",
+    "wal",
+    "btree",
+    "typescript",
+    "learning"
+  ],
   "type": "module",
-  "bin": { "minidb": "./dist/repl.js" },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "minidb": "./dist/repl.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/repl.ts",
@@ -11,7 +43,6 @@
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.check.json"
   },
-  "license": "MIT",
   "devDependencies": {
     "@types/node": "^20.14.0",
     "tsx": "^4.19.0",
