@@ -1,0 +1,21 @@
+{
+  "name": "minidb",
+  "version": "0.1.0",
+  "description": "A small Postgres-shaped SQL database engine, from scratch in TypeScript",
+  "type": "module",
+  "bin": { "minidb": "./dist/repl.js" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/repl.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.check.json"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

@@ -1,0 +1,92 @@
+{
+  "fps": 30,
+  "scenes": [
+    {
+      "id": "title",
+      "minSeconds": 6,
+      "lines": [
+        "This is minidb, a small database engine we built from scratch in TypeScript.",
+        "In three minutes you will know how it stores rows, finds them, and survives a power cut."
+      ]
+    },
+    {
+      "id": "jobs",
+      "minSeconds": 8,
+      "lines": [
+        "A database is a very careful filing clerk with three jobs.",
+        "Store rows. Find them fast, without reading everything.",
+        "And never lose anything, even if the power goes out in the middle of a write."
+      ]
+    },
+    {
+      "id": "pages",
+      "minSeconds": 14,
+      "lines": [
+        "Everything starts with pages. The whole database is one file, cut into four kilobyte blocks.",
+        "Each page is like a sheet of paper with a small index in its top margin: item two starts at byte thirty-eight ten.",
+        "Rows are written from the bottom up, the index grows from the top down, and the gap in the middle is free space."
+      ]
+    },
+    {
+      "id": "tree",
+      "minSeconds": 14,
+      "lines": [
+        "A table is a chain of pages. A row's address is its page number and its slot number.",
+        "To find a row by id without reading everything, we keep a B plus tree: a sorted tree of pages, copied from Postgres.",
+        "Looking up id four takes two hops. Root says go right. The leaf says: page seven, slot three."
+      ]
+    },
+    {
+      "id": "cache",
+      "minSeconds": 12,
+      "lines": [
+        "Reading the disk is slow, so we keep five hundred twelve pages in memory.",
+        "When you insert a row, only the in-memory copies of page seven and page nine change. We call them dirty.",
+        "The disk is untouched. If the power went out now, the row would vanish, and that is correct: you were never told it was saved."
+      ]
+    },
+    {
+      "id": "wal",
+      "minSeconds": 14,
+      "lines": [
+        "Here is the trick that makes it safe. Before touching the real file, commit copies every dirty page into a second file, the write-ahead log.",
+        "Then it appends a COMMIT marker, then calls fsync, which waits until the bytes are physically on the disk.",
+        "Only then do you get your confirmation. The data file is still old, and that does not matter."
+      ]
+    },
+    {
+      "id": "crash",
+      "minSeconds": 14,
+      "lines": [
+        "Now pull the plug. On restart, minidb reads the log. Every entry carries a checksum.",
+        "It replays everything up to the last COMMIT marker into the data file, and throws the torn tail away.",
+        "A confirmed change can never be lost. A half-written one can never survive."
+      ]
+    },
+    {
+      "id": "sql",
+      "minSeconds": 14,
+      "lines": [
+        "On top of all that sits SQL. Your text becomes tokens, then a tree.",
+        "The binder checks types: comparing an integer column to text is an error, just like Postgres.",
+        "The planner decides: id has an index, so use it. The executor pulls rows one at a time through a chain of small nodes."
+      ]
+    },
+    {
+      "id": "recap",
+      "minSeconds": 14,
+      "lines": [
+        "Seven layers, each talking only to the one below: pages, the log, the page cache, tables and indexes, the catalog, the SQL front end, and the front door.",
+        "About four thousand lines of TypeScript and thirty-four tests, including a child process that gets killed mid-write six times."
+      ]
+    },
+    {
+      "id": "end",
+      "minSeconds": 7,
+      "lines": [
+        "The code, the research notes, and an interactive explainer are in the repo.",
+        "Open the REPL and type EXPLAIN to watch the planner think."
+      ]
+    }
+  ]
+}

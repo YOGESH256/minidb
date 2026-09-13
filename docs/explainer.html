@@ -1,0 +1,389 @@
+<title>minidb Explained</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --paper: #f3f5f8;
+    --paper-2: #e9edf2;
+    --grid: rgba(23, 32, 43, 0.06);
+    --ink: #17202b;
+    --ink-2: #4b5868;
+    --ink-3: #7d8a9a;
+    --line: #c9d1db;
+    --stamp: #c8322b;
+    --stamp-soft: rgba(200, 50, 43, 0.12);
+    --safe: #2f7d5b;
+    --safe-soft: rgba(47, 125, 91, 0.14);
+    --mem: #b7791f;
+    --mem-soft: rgba(183, 121, 31, 0.14);
+    --panel: #ffffff;
+    --focus: #2b6cb0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #141a22; --paper-2: #1b232d; --grid: rgba(233, 237, 242, 0.05);
+      --ink: #e8edf3; --ink-2: #b4bfcc; --ink-3: #7f8b99; --line: #2e3947;
+      --stamp: #ff6b61; --stamp-soft: rgba(255, 107, 97, 0.16);
+      --safe: #5fc38f; --safe-soft: rgba(95, 195, 143, 0.16);
+      --mem: #e0a83f; --mem-soft: rgba(224, 168, 63, 0.16);
+      --panel: #1b232d; --focus: #7ab4f5;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #141a22; --paper-2: #1b232d; --grid: rgba(233, 237, 242, 0.05);
+    --ink: #e8edf3; --ink-2: #b4bfcc; --ink-3: #7f8b99; --line: #2e3947;
+    --stamp: #ff6b61; --stamp-soft: rgba(255, 107, 97, 0.16);
+    --safe: #5fc38f; --safe-soft: rgba(95, 195, 143, 0.16);
+    --mem: #e0a83f; --mem-soft: rgba(224, 168, 63, 0.16);
+    --panel: #1b232d; --focus: #7ab4f5;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; color: var(--ink);
+    background: var(--paper);
+    background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+    background-size: 24px 24px;
+    font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 16px; line-height: 1.55;
+  }
+  h1, h2, h3 { font-family: "Bricolage Grotesque", "IBM Plex Sans", system-ui, sans-serif; text-wrap: balance; margin: 0; }
+  h1 { font-size: clamp(2rem, 4.5vw, 3.2rem); font-weight: 700; line-height: 1.05; letter-spacing: -0.01em; }
+  h2 { font-size: 1.5rem; font-weight: 700; }
+  h3 { font-size: 1.1rem; font-weight: 700; }
+  code, .mono { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: 0.9em; }
+  .eyebrow { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.12em; color: var(--ink-3); font-weight: 600; }
+  p { max-width: 64ch; }
+  a { color: var(--focus); }
+  button { font: inherit; cursor: pointer; }
+  button:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 40px 24px 80px; display: flex; flex-direction: column; gap: 56px; }
+  header { display: grid; gap: 14px; }
+  header p.lede { font-size: 1.15rem; color: var(--ink-2); max-width: 58ch; }
+
+  /* ---- layer tower + detail ---- */
+  .tower-section { display: grid; grid-template-columns: minmax(280px, 380px) 1fr; gap: 32px; align-items: start; }
+  @media (max-width: 760px) { .tower-section { grid-template-columns: 1fr; } }
+  .tower { display: flex; flex-direction: column; gap: 6px; }
+  .layer {
+    display: grid; grid-template-columns: 28px 1fr auto; align-items: center; gap: 12px;
+    padding: 12px 14px; border: 1px solid var(--line); background: var(--panel);
+    text-align: left; color: var(--ink); border-radius: 4px; transition: transform 120ms ease, border-color 120ms ease;
+  }
+  .layer:hover { border-color: var(--ink-3); }
+  .layer.active { border-color: var(--stamp); box-shadow: inset 4px 0 0 var(--stamp); }
+  .layer .n { font-family: "IBM Plex Mono", monospace; font-size: 0.75rem; color: var(--ink-3); }
+  .layer .t { font-weight: 600; }
+  .layer .f { font-family: "IBM Plex Mono", monospace; font-size: 0.72rem; color: var(--ink-3); }
+  .layer.disk { background: var(--paper-2); border-style: dashed; }
+  .tower-cap { font-size: 0.8rem; color: var(--ink-3); display: flex; justify-content: space-between; padding: 0 4px; }
+
+  .detail { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 24px 28px; display: grid; gap: 16px; min-height: 380px; position: sticky; top: 16px; }
+  .detail .file { display: inline-block; font-family: "IBM Plex Mono", monospace; font-size: 0.8rem; color: var(--ink-2); background: var(--paper-2); padding: 3px 8px; border-radius: 3px; }
+  .detail dl { display: grid; grid-template-columns: max-content 1fr; gap: 8px 18px; margin: 0; }
+  .detail dt { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--ink-3); font-weight: 600; padding-top: 3px; }
+  .detail dd { margin: 0; color: var(--ink); max-width: 56ch; }
+  .detail dd.analogy { font-style: italic; color: var(--ink-2); }
+
+  /* ---- walkthrough ---- */
+  .walk { display: grid; gap: 20px; }
+  .steps { display: flex; gap: 6px; flex-wrap: wrap; }
+  .step-btn { border: 1px solid var(--line); background: var(--panel); color: var(--ink-2); padding: 6px 12px; border-radius: 999px; font-size: 0.85rem; }
+  .step-btn.active { border-color: var(--stamp); color: var(--ink); background: var(--stamp-soft); }
+  .step-btn.done { color: var(--ink-3); }
+  .stage { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+  @media (max-width: 760px) { .stage { grid-template-columns: 1fr; } }
+  .store { border: 1px solid var(--line); background: var(--panel); border-radius: 4px; padding: 14px 16px; display: grid; gap: 10px; align-content: start; min-height: 190px; }
+  .store h3 { display: flex; justify-content: space-between; align-items: baseline; font-size: 1rem; }
+  .store .tag { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
+  .store.memory .tag { background: var(--mem-soft); color: var(--mem); }
+  .store.log .tag { background: var(--stamp-soft); color: var(--stamp); }
+  .store.disk .tag { background: var(--safe-soft); color: var(--safe); }
+  .store ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-family: "IBM Plex Mono", monospace; font-size: 0.8rem; }
+  .store li { padding: 6px 8px; border-radius: 3px; background: var(--paper-2); color: var(--ink-2); display: flex; justify-content: space-between; gap: 8px; }
+  .store li.new { background: var(--stamp-soft); color: var(--ink); }
+  .store li.dirty::after { content: "changed"; font-size: 0.68rem; color: var(--mem); }
+  .store li.safe::after { content: "safe"; font-size: 0.68rem; color: var(--safe); }
+  .store .empty { color: var(--ink-3); font-style: italic; font-family: "IBM Plex Sans", sans-serif; }
+  .narr { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--stamp); border-radius: 4px; padding: 16px 20px; display: grid; gap: 6px; }
+  .narr .who { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--stamp); font-weight: 600; }
+  .narr p { margin: 0; }
+  .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .btn { border: 1px solid var(--ink); background: var(--ink); color: var(--paper); padding: 8px 16px; border-radius: 4px; font-weight: 600; }
+  .btn.ghost { background: transparent; color: var(--ink); }
+  .btn:disabled { opacity: 0.4; cursor: default; }
+  .cut { border: 1px dashed var(--stamp); background: var(--stamp-soft); border-radius: 4px; padding: 14px 18px; display: grid; gap: 4px; }
+  .cut strong { color: var(--stamp); }
+
+  /* ---- flow figure ---- */
+  figure { margin: 0; display: grid; gap: 10px; }
+  figure svg { max-width: 100%; height: auto; display: block; color: var(--ink); }
+  figcaption { font-size: 0.85rem; color: var(--ink-2); max-width: 70ch; }
+  .fig-wrap { overflow-x: auto; }
+
+  /* ---- glossary ---- */
+  .gloss { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+  .gloss div { border-top: 2px solid var(--line); padding-top: 10px; display: grid; gap: 4px; }
+  .gloss b { font-family: "Bricolage Grotesque", sans-serif; font-size: 1.02rem; }
+  .gloss span { color: var(--ink-2); font-size: 0.93rem; }
+
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+  .facts div { padding: 12px 14px; border-left: 2px solid var(--line); display: grid; gap: 2px; }
+  .facts .v { font-family: "Bricolage Grotesque", sans-serif; font-size: 1.6rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .facts .k { font-size: 0.8rem; color: var(--ink-3); }
+
+  @media (prefers-reduced-motion: reduce) { .layer { transition: none; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">minidb · a database engine we built from scratch</div>
+    <h1>What is what inside minidb</h1>
+    <p class="lede">A database is a very careful filing clerk: it stores rows, finds them fast, and never loses anything, even if the power goes out mid-write. minidb is that clerk, built in seven layers of TypeScript. Click a layer to see what it does in plain words, then follow one <code>INSERT</code> all the way to disk.</p>
+    <div class="facts">
+      <div><span class="v">7</span><span class="k">layers, each only talks to the one below</span></div>
+      <div><span class="v">4 KB</span><span class="k">size of one page, the unit everything is stored in</span></div>
+      <div><span class="v">2</span><span class="k">files on disk: the data file and the log</span></div>
+      <div><span class="v">34</span><span class="k">tests, including pulling the plug mid-write</span></div>
+    </div>
+  </header>
+
+  <!-- ================= LAYERS ================= -->
+  <section class="tower-section">
+    <div>
+      <div class="eyebrow" style="margin-bottom:10px">The seven layers (top = what you type, bottom = the disk)</div>
+      <div class="tower" id="tower"></div>
+      <div class="tower-cap" style="margin-top:8px"><span>↑ you</span><span>disk ↓</span></div>
+    </div>
+    <div class="detail" id="detail"></div>
+  </section>
+
+  <!-- ================= WALKTHROUGH ================= -->
+  <section class="walk">
+    <div>
+      <div class="eyebrow">Follow one row</div>
+      <h2>What happens when you run <code>INSERT INTO users VALUES (4, 'dee', 29);</code></h2>
+      <p style="color:var(--ink-2)">Three places can hold data: memory (fast, gone on power loss), the log file (a diary of what changed), and the data file (the real thing). Watch the row move between them. The left panel is the layer doing the work at each step.</p>
+    </div>
+    <div class="steps" id="steps"></div>
+    <div class="narr" id="narr"></div>
+    <div class="stage">
+      <div class="store memory"><h3>Memory (page cache) <span class="tag">volatile</span></h3><ul id="mem"></ul></div>
+      <div class="store log"><h3>Log file <span class="tag">diary</span></h3><ul id="log"></ul></div>
+      <div class="store disk"><h3>Data file <span class="tag">the real thing</span></h3><ul id="disk"></ul></div>
+    </div>
+    <div class="controls">
+      <button class="btn ghost" id="prev">← Back</button>
+      <button class="btn" id="next">Next step →</button>
+      <button class="btn ghost" id="cutBtn" title="What survives if the machine dies right now?">⚡ Pull the plug here</button>
+    </div>
+    <div class="cut" id="cut" hidden></div>
+  </section>
+
+  <!-- ================= READ PATH ================= -->
+  <section>
+    <div class="eyebrow">And when you ask a question</div>
+    <h2 style="margin:6px 0 14px">How <code>SELECT name FROM users WHERE id = 4</code> finds its answer</h2>
+    <figure>
+      <div class="fig-wrap">
+      <svg viewBox="0 0 900 250" role="img" aria-label="A SELECT flows left to right: text becomes a tree, the tree is type-checked, the planner picks the index because id is indexed, the executor pulls one row through Index Scan then Project, and the result goes back.">
+        <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>
+        <g fill="none" stroke="currentColor" stroke-width="1.2">
+          <rect x="10" y="80" width="130" height="60" rx="3"/>
+          <rect x="190" y="80" width="130" height="60" rx="3"/>
+          <rect x="370" y="80" width="130" height="60" rx="3"/>
+          <rect x="550" y="40" width="150" height="60" rx="3"/>
+          <rect x="550" y="150" width="150" height="60" rx="3" stroke-dasharray="4 3"/>
+          <rect x="760" y="80" width="130" height="60" rx="3"/>
+        </g>
+        <g font-family="IBM Plex Sans, sans-serif" font-size="12" fill="currentColor" text-anchor="middle">
+          <text x="75" y="105" font-weight="600">Lexer + Parser</text><text x="75" y="123" font-size="11" opacity="0.7">text → tree</text>
+          <text x="255" y="105" font-weight="600">Binder</text><text x="255" y="123" font-size="11" opacity="0.7">id is INT, 4 is INT ✓</text>
+          <text x="435" y="105" font-weight="600">Planner</text><text x="435" y="123" font-size="11" opacity="0.7">id has an index → use it</text>
+          <text x="625" y="65" font-weight="600">Index Scan</text><text x="625" y="83" font-size="11" opacity="0.7">B+tree: 4 → page 7, slot 3</text>
+          <text x="625" y="175" font-weight="600">Seq Scan</text><text x="625" y="193" font-size="11" opacity="0.7">read every row (not chosen)</text>
+          <text x="825" y="105" font-weight="600">Project</text><text x="825" y="123" font-size="11" opacity="0.7">keep only "name"</text>
+        </g>
+        <g stroke="currentColor" stroke-width="1.2" fill="none" marker-end="url(#arr)">
+          <line x1="140" y1="110" x2="188" y2="110"/>
+          <line x1="320" y1="110" x2="368" y2="110"/>
+          <path d="M500 110 L525 110 L525 70 L548 70"/>
+          <line x1="700" y1="70" x2="740" y2="70" stroke="var(--stamp)"/>
+          <path d="M740 70 L740 110 L758 110" stroke="var(--stamp)"/>
+        </g>
+        <g stroke="currentColor" stroke-width="1.2" fill="none" stroke-dasharray="3 3" opacity="0.5">
+          <path d="M525 110 L525 180 L548 180"/>
+        </g>
+        <g font-family="IBM Plex Sans, sans-serif" font-size="11" fill="currentColor" opacity="0.7" text-anchor="middle">
+          <text x="164" y="100">tokens</text>
+          <text x="344" y="100">typed tree</text>
+          <text x="720" y="60" fill="var(--stamp)" opacity="1">1 row</text>
+          <text x="450" y="230">Rows are pulled one at a time from right to left: Project asks Index Scan "next?", Index Scan asks the B+tree, the tree points at the exact page.</text>
+        </g>
+      </svg>
+      </div>
+      <figcaption>The planner is the decision point. Because <code>id</code> has an index, it takes the top path and reads one page instead of every page. <code>EXPLAIN</code> in the REPL shows you exactly this choice.</figcaption>
+    </figure>
+  </section>
+
+  <!-- ================= GLOSSARY ================= -->
+  <section>
+    <div class="eyebrow">Words you will meet in the code</div>
+    <h2 style="margin:6px 0 18px">Glossary, in the order you would meet them</h2>
+    <div class="gloss" id="gloss"></div>
+  </section>
+
+  <section>
+    <div class="eyebrow">Where to look</div>
+    <p style="color:var(--ink-2)"><code>docs/HOW-WE-BUILT-IT.txt</code> is the same story in prose. <code>README.md</code> has the SQL we support and the numbers. <code>review.md</code> is the code review with all ten findings and how each was fixed. Run <code>npx tsx src/repl.ts demo.db</code> and type <code>EXPLAIN SELECT ...</code> to watch the planner think.</p>
+  </section>
+</div>
+
+<script>
+  // ---------- layers (top to bottom) ----------
+  const LAYERS = [
+    { n: 7, t: 'Front door + REPL', f: 'src/database.ts, src/repl.ts',
+      what: 'Takes your SQL, runs it one statement at a time, and makes each statement its own transaction unless you said BEGIN. Also enforces PRIMARY KEY, UNIQUE and NOT NULL, and keeps every index up to date when rows change.',
+      analogy: 'The front desk. You hand over a form; it checks the form is legal, stamps it, and routes it to the right clerk.',
+      wrong: 'Rows could break the rules (two users with the same id), or an index could point at a row that moved.' },
+    { n: 6, t: 'SQL front end', f: 'src/sql/ (lexer, parser, expr, planner, executor)',
+      what: 'Turns the text "SELECT * FROM t WHERE id = 5" into tokens, then into a tree, checks the types, decides whether to use an index or read the whole table, and runs the query as a pipeline of small nodes that pass rows one at a time.',
+      analogy: 'A translator plus a route planner. It understands what you asked, then picks the shortest way through the building to fetch it.',
+      wrong: 'A query would be misunderstood, or would work but read every row when it could have jumped straight to one.' },
+    { n: 5, t: 'Catalog', f: 'src/catalog.ts',
+      what: 'The list of tables, their columns, and their indexes. Stored as three built-in tables (__tables, __columns, __indexes) inside the database itself, at fixed page numbers written in the file header.',
+      analogy: 'The building directory in the lobby. It is itself pinned to the wall at a known spot, so you can always find it.',
+      wrong: 'The engine would not know a table exists, or which page it starts on.' },
+    { n: 4, t: 'Tables + indexes', f: 'src/storage/heap.ts, src/storage/btree.ts',
+      what: 'A table is a chain of pages holding rows; a row\'s address is (page, slot). An index is a B+tree: a sorted, balanced tree of pages whose leaves say "key 4 is at page 7, slot 3". Full pages split in two and push a divider up.',
+      analogy: 'Filing cabinets (tables) and the sorted card index on top (B+tree) that tells you which drawer to open.',
+      wrong: 'Lookups by id would be slow (read everything) or, worse, return the wrong row.' },
+    { n: 3, t: 'Page cache + transactions', f: 'src/storage/pager.ts',
+      what: 'Keeps 512 pages in memory so we do not hit the disk for every read. Changes happen to the in-memory copy. COMMIT copies changed pages into the log and fsyncs once; ROLLBACK just forgets them. When memory is full it evicts pages nobody used lately (a "clock" sweep), or spills uncommitted ones into the log.',
+      analogy: 'The clerk\'s desk. Papers being worked on sit here; nothing goes back into the cabinets until the day\'s work is confirmed.',
+      wrong: 'A confirmed change could vanish, or an unconfirmed one could leak onto disk. Both were real bugs the code review found and we fixed.' },
+    { n: 2, t: 'Write-ahead log (WAL)', f: 'src/storage/wal.ts',
+      what: 'Before touching the real data file, we append "here is the new contents of page 7" to a separate log file, then a COMMIT marker, then fsync. Every entry has a checksum. On restart we replay entries up to the last COMMIT and throw away anything after.',
+      analogy: 'A diary written before you act. If you are interrupted, you read the diary and redo what was fully written down.',
+      wrong: 'A power cut mid-write would leave half a change on disk with no way to tell.' },
+    { n: 1, t: 'Pages (the disk file)', f: 'src/storage/page.ts, src/storage/file-io.ts',
+      what: 'The whole database is one file cut into 4 KB blocks. Each block has a small index at the top ("item 3 starts at byte 3900") and rows written from the bottom up. Deleting a row only crosses out its index entry. A checksum catches disk corruption.',
+      analogy: 'Sheets of paper in a binder. Each sheet has a table of contents in its top margin.',
+      wrong: 'We could not find a row again after writing it, or could not notice the disk handed us garbage.', disk: true },
+  ];
+
+  const tower = document.getElementById('tower');
+  const detail = document.getElementById('detail');
+  let activeLayer = 4; // index into LAYERS
+  function renderTower(highlight) {
+    tower.innerHTML = '';
+    LAYERS.forEach((L, i) => {
+      const b = document.createElement('button');
+      b.className = 'layer' + (L.disk ? ' disk' : '') + (i === activeLayer ? ' active' : '');
+      b.innerHTML = `<span class="n">${L.n}</span><span class="t">${L.t}</span><span class="f">${L.f.split(',')[0].replace('src/', '')}</span>`;
+      b.addEventListener('click', () => { activeLayer = i; renderTower(); renderDetail(); });
+      tower.appendChild(b);
+    });
+  }
+  function renderDetail() {
+    const L = LAYERS[activeLayer];
+    detail.innerHTML = `
+      <div><div class="eyebrow">Layer ${L.n} of 7</div><h2>${L.t}</h2></div>
+      <span class="file">${L.f}</span>
+      <dl>
+        <dt>What it does</dt><dd>${L.what}</dd>
+        <dt>Think of it as</dt><dd class="analogy">${L.analogy}</dd>
+        <dt>If it were wrong</dt><dd>${L.wrong}</dd>
+      </dl>`;
+  }
+  renderTower(); renderDetail();
+
+  // ---------- INSERT walkthrough ----------
+  const P = (id, label, cls) => ({ id, label, cls });
+  const STEPS = [
+    { title: 'You type', layer: 7,
+      who: 'Front door', text: 'You run <code>INSERT INTO users VALUES (4, \'dee\', 29);</code>. Nothing has happened yet. Memory holds a few pages from earlier queries; the log is empty; the data file has the three users from before.',
+      mem: [P('page 7', 'users rows 1–3', ''), P('page 9', 'index leaf: 1,2,3', '')], log: [], disk: [P('page 0', 'header + catalog roots', 'safe'), P('page 7', 'users rows 1–3', 'safe'), P('page 9', 'index leaf: 1,2,3', 'safe')] },
+    { title: 'Understand it', layer: 6,
+      who: 'SQL front end', text: 'The lexer splits the text into tokens, the parser builds a tree (an INSERT node with one row of three values), and the binder checks types: 4 is INT, \'dee\' is TEXT, 29 is INT. All match the columns. If you had written <code>\'four\'</code> for the id, it would stop here with an error.',
+      mem: [P('page 7', 'users rows 1–3', ''), P('page 9', 'index leaf: 1,2,3', '')], log: [], disk: [P('page 0', 'header + catalog roots', 'safe'), P('page 7', 'users rows 1–3', 'safe'), P('page 9', 'index leaf: 1,2,3', 'safe')] },
+    { title: 'Find the table', layer: 5,
+      who: 'Catalog', text: 'The catalog says: table <code>users</code> starts at page 7, has columns id/name/age, and has one index <code>users_pkey</code> on id whose tree starts at page 8. Now we know where to write.',
+      mem: [P('page 7', 'users rows 1–3', ''), P('page 9', 'index leaf: 1,2,3', '')], log: [], disk: [P('page 0', 'header + catalog roots', 'safe'), P('page 7', 'users rows 1–3', 'safe'), P('page 9', 'index leaf: 1,2,3', 'safe')] },
+    { title: 'Write the row', layer: 4,
+      who: 'Table (heap)', text: 'The row is packed into bytes: a null bitmap, then 4, then "dee", then 29. The table\'s last page (7) has free space, so the bytes go in and get slot number 3. The row\'s address is now <b>(page 7, slot 3)</b>. Only the copy in memory changed.',
+      mem: [P('page 7', 'users rows 1–3 <b>+ (4, dee, 29)</b>', 'dirty new'), P('page 9', 'index leaf: 1,2,3', '')], log: [], disk: [P('page 0', 'header + catalog roots', 'safe'), P('page 7', 'users rows 1–3', 'safe'), P('page 9', 'index leaf: 1,2,3', 'safe')] },
+    { title: 'Update the index', layer: 4,
+      who: 'Index (B+tree)', text: 'First the unique check: look up 4 in the tree. Not found, good. Then insert the entry <code>4 → (page 7, slot 3)</code> into the sorted leaf page 9. It fits, so no split. Now page 9 in memory is changed too.',
+      mem: [P('page 7', 'users rows 1–3 + (4, dee, 29)', 'dirty'), P('page 9', 'index leaf: 1,2,3,<b>4</b>', 'dirty new')], log: [], disk: [P('page 0', 'header + catalog roots', 'safe'), P('page 7', 'users rows 1–3', 'safe'), P('page 9', 'index leaf: 1,2,3', 'safe')] },
+    { title: 'Commit: write the diary', layer: 3,
+      who: 'Page cache + transactions', text: 'The statement is done, so it auto-commits. The page cache copies the full contents of every changed page (7 and 9) into the log file, then appends a <b>COMMIT</b> marker, then calls <code>fsync</code>, which makes the OS wait until the bytes are physically on disk. Only now do we tell you "INSERT 1".',
+      mem: [P('page 7', 'users rows 1–3 + (4, dee, 29)', 'dirty'), P('page 9', 'index leaf: 1,2,3,4', 'dirty')], log: [P('image of page 7', '4 KB + checksum', 'new'), P('image of page 9', '4 KB + checksum', 'new'), P('COMMIT', 'marker + checksum', 'new')], disk: [P('page 0', 'header + catalog roots', 'safe'), P('page 7', 'users rows 1–3', 'safe'), P('page 9', 'index leaf: 1,2,3', 'safe')] },
+    { title: 'Later: checkpoint', layer: 2,
+      who: 'Log + data file', text: 'The data file is still old, but that is fine: the diary has everything. When the log gets big (or you close the database) a <b>checkpoint</b> writes the changed pages into the data file, fsyncs it, and empties the log. Reads in between are served from memory, so nobody notices.',
+      mem: [P('page 7', 'users rows 1–4', ''), P('page 9', 'index leaf: 1,2,3,4', '')], log: [], disk: [P('page 0', 'header + catalog roots', 'safe'), P('page 7', 'users rows 1–4', 'safe new'), P('page 9', 'index leaf: 1,2,3,4', 'safe new')] },
+  ];
+  const CUTS = [
+    'Nothing to lose. You never got a confirmation.',
+    'Nothing to lose. The row exists only as a parse tree in memory. Restart: the database looks exactly as before.',
+    'Nothing to lose. We have only read the catalog.',
+    '<strong>Row is gone, and that is correct.</strong> It lived only in memory and you were never told "INSERT 1". On restart the log is empty and the data file still has three users.',
+    '<strong>Row is gone, and that is correct.</strong> Same as before: memory only. The half-finished index change vanishes with it, so table and index stay consistent.',
+    '<strong>Row survives.</strong> The log holds both page images and the COMMIT marker, fsynced. On restart minidb replays them into the data file. If the plug had been pulled halfway through writing the log, the COMMIT marker would be missing or its checksum wrong, and the tail is discarded: again consistent.',
+    '<strong>Row survives</strong> either way: it is in the data file, or still in the log if the checkpoint was interrupted. A half-written page in the data file is caught by its checksum and repaired from the log.',
+  ];
+  let step = 0;
+  const stepsEl = document.getElementById('steps'), narr = document.getElementById('narr');
+  const memEl = document.getElementById('mem'), logEl = document.getElementById('log'), diskEl = document.getElementById('disk');
+  const cutEl = document.getElementById('cut');
+  function li(items, empty) {
+    if (!items.length) return `<li class="empty">${empty}</li>`;
+    return items.map((p) => `<li class="${p.cls}"><span><b>${p.id}</b> · ${p.label}</span></li>`).join('');
+  }
+  function renderStep() {
+    stepsEl.innerHTML = STEPS.map((s, i) => `<button class="step-btn ${i === step ? 'active' : i < step ? 'done' : ''}" data-i="${i}">${i + 1}. ${s.title}</button>`).join('');
+    stepsEl.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => { step = +b.dataset.i; renderStep(); }));
+    const s = STEPS[step];
+    narr.innerHTML = `<div class="who">Step ${step + 1} of ${STEPS.length} · ${s.who}</div><p>${s.text}</p>`;
+    memEl.innerHTML = li(s.mem, 'empty');
+    logEl.innerHTML = li(s.log, 'empty (nothing to replay)');
+    diskEl.innerHTML = li(s.disk, 'empty');
+    document.getElementById('prev').disabled = step === 0;
+    document.getElementById('next').disabled = step === STEPS.length - 1;
+    cutEl.hidden = true;
+    activeLayer = LAYERS.findIndex((L) => L.n === s.layer);
+    renderTower(); renderDetail();
+  }
+  document.getElementById('prev').addEventListener('click', () => { step = Math.max(0, step - 1); renderStep(); });
+  document.getElementById('next').addEventListener('click', () => { step = Math.min(STEPS.length - 1, step + 1); renderStep(); });
+  document.getElementById('cutBtn').addEventListener('click', () => {
+    cutEl.hidden = false;
+    cutEl.innerHTML = `<div class="eyebrow" style="color:var(--stamp)">⚡ Power cut after step ${step + 1}</div><div>${CUTS[step]}</div>`;
+  });
+  renderStep();
+
+  // ---------- glossary ----------
+  const GLOSS = [
+    ['Page', 'A 4 KB block of the file. Everything (rows, index entries, the catalog) lives in pages.'],
+    ['Slot / TID', 'A row\'s address: which page and which numbered entry on that page. Stays valid even after other rows are deleted.'],
+    ['Heap', 'The plain, unordered storage for a table\'s rows. "Heap" here just means "pile", not the data structure.'],
+    ['B+tree', 'A sorted tree of pages used for indexes. Jump from the root to the right leaf in two or three hops instead of reading everything.'],
+    ['Split', 'When an index page fills up, it is cut in two and a divider key is pushed up to the parent. That is how the tree stays balanced.'],
+    ['Buffer pool / page cache', 'The pages currently held in memory. Limited to 512, so old ones get evicted.'],
+    ['Dirty page', 'A page in memory that differs from what is on disk. Must reach the log before it may reach the data file.'],
+    ['WAL', 'Write-ahead log. The diary file. "Write ahead" = written before the real data file is touched.'],
+    ['fsync', 'A request to the operating system: do not return until these bytes are truly on the disk platter/flash, not just in a cache.'],
+    ['Commit', 'The moment a change becomes permanent: images in the log, COMMIT marker, fsync done.'],
+    ['Checkpoint', 'Copy all dirty pages into the data file and empty the log. Housekeeping, not correctness.'],
+    ['Recovery', 'What happens on open: replay log entries up to the last COMMIT, discard the rest.'],
+    ['Checksum', 'A small number computed from a page\'s bytes. If the stored number does not match, the disk gave us garbage.'],
+    ['Catalog', 'Tables about tables: which tables exist, their columns, their indexes.'],
+    ['Lexer / parser', 'Text → tokens → tree. The tree is what the rest of the engine works with.'],
+    ['Binder', 'Resolves names (which column is "id"?) and checks types. Strict: INT = TEXT is an error, like Postgres.'],
+    ['Planner', 'Decides how to run a query: index or full scan, and in which order to join tables.'],
+    ['Volcano executor', 'The query runs as a chain of nodes, each with next(). Rows are pulled one at a time from the top.'],
+    ['Nested loop join', 'For each row on the left, look up matches on the right. Fast when the right side has an index.'],
+    ['Spill', 'When memory is full of uncommitted pages, one is written to the log early and freed. Lets one statement change more pages than fit in memory.'],
+  ];
+  document.getElementById('gloss').innerHTML = GLOSS.map(([k, v]) => `<div><b>${k}</b><span>${v}</span></div>`).join('');
+</script>

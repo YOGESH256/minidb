@@ -1,0 +1,87 @@
+HOW WE BUILT MINIDB, IN SIMPLE TERMS
+====================================
+
+Think of a database as a very careful filing clerk. It has to store rows,
+find them fast, and never lose anything even if the power goes out mid-write.
+We built that clerk in seven layers, bottom to top. Each layer only talks to
+the one below it.
+
+1. PAGES  (src/storage/page.ts)
+   The whole database is one file, cut into 4 KB blocks called pages.
+   A page is like a sheet of paper with a small index at the top: a list of
+   "item N starts at byte X". Rows are written from the bottom of the sheet
+   upward, the index grows from the top downward, and the gap in the middle
+   is free space. Deleting a row just crosses out its index entry, so other
+   rows keep their positions. Every page also has a checksum so we can tell if
+   the disk handed us garbage.
+
+2. THE LOG  (src/storage/wal.ts)
+   Before we change the real file, we write what we are about to do into a
+   second file, the write-ahead log. Each entry is "here is the full new
+   contents of page 17", followed at the end of a transaction by a "COMMIT"
+   marker. Every entry carries a checksum. If the machine dies halfway through
+   writing, the half-written tail fails its checksum and is thrown away, and
+   anything after the last COMMIT marker is ignored. That is the whole trick
+   behind "never lose a committed row".
+
+3. THE PAGE CACHE  (src/storage/pager.ts)
+   Reading from disk is slow, so we keep 512 pages in memory. When a
+   transaction changes a page we change the copy in memory and hold it there.
+   On COMMIT we copy every changed page into the log and fsync once. Only
+   after that may a page be written back to the main file. On ROLLBACK we
+   just forget the in-memory copies; the disk never saw them. When the log
+   gets big we do a "checkpoint": write all changed pages to the main file and
+   empty the log. When the cache is full we evict pages using a "clock":
+   sweep around, give recently used pages a second chance, evict the first
+   one nobody used lately.
+
+4. TABLES AND INDEXES  (src/storage/heap.ts, src/storage/btree.ts)
+   A table is a chain of pages. A row's address is (page number, slot number).
+   An index is a B+tree: a sorted, balanced tree of pages. Leaves hold
+   (key, row address) sorted by key and are linked left-to-right, so a range
+   query walks the leaves like a linked list. Inner pages hold "keys smaller
+   than X go left of here". When a page fills up we split it in two and push
+   one separator key up to the parent; if the root splits we grow one level.
+   Every rule here is copied from PostgreSQL's B-tree code.
+
+5. THE CATALOG  (src/catalog.ts)
+   Where do we store the list of tables? In tables. Three built-in tables
+   (__tables, __columns, __indexes) live at fixed page numbers written in the
+   file header. Their own layout is hardcoded in the program, which breaks the
+   chicken-and-egg problem. You can SELECT from them like any other table.
+
+6. THE SQL FRONT END  (src/sql/)
+   lexer.ts   turns "SELECT * FROM t WHERE id = 5" into tokens.
+   parser.ts  turns tokens into a tree (a SELECT node with a WHERE child...).
+   expr.ts    checks types (INT = TEXT is an error, like Postgres) and turns
+              each expression into a small function we can run on a row.
+   planner.ts decides how to fetch rows: if the WHERE clause pins an indexed
+              column, use the index; otherwise read the whole table. For
+              JOINs it loops over the left table and, for each row, looks up
+              matches in the right table, using an index when there is one.
+   executor.ts is a pipeline of small nodes (Scan, Filter, Join, Sort, Limit,
+              Project). Each one has next(), which asks its child for a row,
+              does its job, and hands the row up. Rows flow one at a time.
+
+7. THE FRONT DOOR  (src/database.ts, src/repl.ts)
+   Database.exec(sql) runs statements. Each statement is its own transaction
+   unless you say BEGIN. INSERT/UPDATE/DELETE check PRIMARY KEY, UNIQUE and
+   NOT NULL, write the row, and update every index. The REPL is a tiny psql.
+
+HOW WE KNOW IT WORKS  (test/)
+   - 6,000 random inserts and deletes into a B-tree compared against a plain
+     in-memory map, plus a structural check of every leaf.
+   - A fake file system that "loses power": it drops or half-writes anything
+     not yet fsynced. After each simulated crash, either the whole commit is
+     there or none of it is.
+   - A real child process inserting batches on a real file, killed with
+     SIGKILL at random moments, six times. After every kill we reopen and
+     check that no batch is half-present.
+
+WHAT WE LEFT OUT ON PURPOSE
+   One writer at a time (no MVCC), no GROUP BY or aggregates, no subqueries,
+   no outer joins, rows must fit in a page. The README lists the rest.
+
+-----------------------------------------------------------------------------
+Please review this document and the code it describes, and note anything that
+is unclear, wrong, or worth explaining in more depth.
