@@ -18,7 +18,7 @@ import type { Stmt, SelectStmt, InsertStmt, UpdateStmt, DeleteStmt, Expr } from 
 import { planSelect, openTree } from './sql/planner.js';
 import { Scope, compile } from './sql/expr.js';
 import { collect } from './sql/executor.js';
-import { encodeTuple, decodeTuple, encodeValue, TypeError_, typeOfValue, type Value } from './types.js';
+import { encodeTuple, decodeTuple, encodeValue, decodeValue, compareValues, TypeError_, typeOfValue, type Value } from './types.js';
 
 export interface QueryResult {
   command: string;
@@ -205,6 +205,11 @@ export class Database {
       this.exec('BEGIN');
       try {
         const r = fn(...args);
+        // An async callback returns a Promise before doing its work; committing
+        // here would persist a partial transaction and a later rejection could
+        // never roll it back. Refuse rather than guess.
+        if (r !== null && typeof r === 'object' && typeof (r as { then?: unknown }).then === 'function')
+          throw new TypeError_('transaction callback must be synchronous (it returned a Promise)');
         this.exec('COMMIT');
         return r;
       } catch (e) {
@@ -230,6 +235,72 @@ export class Database {
     }
     const events = this.pager.stopTrace();
     return { results, events, summary: summarize(events) };
+  }
+
+  /**
+   * Structural integrity check an adopter can run on their own file:
+   * catalog roots exist and have the right page type, every heap chain is
+   * intact with a correct `last` pointer, every B-tree is ordered with valid
+   * sibling links and high keys, and every index entry points at a live row.
+   * Returns problems instead of throwing so a report can list them all.
+   * Counts cover user tables; the catalog tables are checked but not counted.
+   */
+  verify(): VerifyReport {
+    const problems: string[] = [];
+    const meta = this.pager.getMeta();
+    const kindOf = (page: number): PageKind => {
+      if (page <= 0 || page >= meta.pageCount) return 'unknown';
+      return PAGE_KIND[this.pager.with(page, (f) => f.page.type)] ?? 'unknown';
+    };
+    let tables = 0;
+    let indexes = 0;
+    let rows = 0;
+    let entries = 0;
+    for (const t of this.catalog.allTables()) {
+      if (!t.system) tables++; // catalog tables are checked but not counted
+      if (kindOf(t.rootPage) !== 'heap') problems.push(`table "${t.name}": root page ${t.rootPage} is ${kindOf(t.rootPage)}, expected heap`);
+      // heap chain
+      const heap = new Heap(this.pager, t.rootPage);
+      const chain = heap.chain();
+      let count = 0;
+      for (const page of chain) {
+        if (kindOf(page) !== 'heap') problems.push(`table "${t.name}": chain page ${page} is ${kindOf(page)}`);
+        count += this.pager.with(page, (f) => [...f.page.items()].length);
+      }
+      const last = this.pager.with(t.rootPage, (f) => f.page.special.readUInt32LE(4));
+      if (last !== chain[chain.length - 1]) problems.push(`table "${t.name}": last-page pointer ${last} but chain ends at ${chain[chain.length - 1]}`);
+      if (!t.system) rows += count;
+      // indexes
+      for (const idx of t.indexes) {
+        indexes++;
+        if (kindOf(idx.metaPage) !== 'btree-meta') problems.push(`index "${idx.name}": meta page ${idx.metaPage} is ${kindOf(idx.metaPage)}`);
+        const type = t.columns[idx.columnIndex]!.type;
+        const tree = openTree(this.pager, idx, type);
+        let n = 0;
+        try {
+          n = tree.verify();
+        } catch (e) {
+          problems.push(`index "${idx.name}": ${(e as Error).message}`);
+        }
+        entries += n;
+        let dangling = 0;
+        let mismatched = 0;
+        for (const e of tree.scan()) {
+          const data = heap.get(e.tid);
+          if (!data) {
+            dangling++;
+            continue;
+          }
+          const v = decodeTuple(t.columns.map((c) => c.type), data)[idx.columnIndex]!;
+          if (v === null || compareValues(type, v, decodeValue(type, e.key, 0).value) !== 0) mismatched++;
+        }
+        if (dangling) problems.push(`index "${idx.name}": ${dangling} entries point at deleted rows`);
+        if (mismatched) problems.push(`index "${idx.name}": ${mismatched} entries disagree with the row's value`);
+        const indexedRows = [...heap.scan()].filter((r) => decodeTuple(t.columns.map((c) => c.type), r.data)[idx.columnIndex] !== null).length;
+        if (n !== indexedRows) problems.push(`index "${idx.name}": ${n} entries for ${indexedRows} indexable rows`);
+      }
+    }
+    return { ok: problems.length === 0, problems, tables, indexes, rows, entries, pages: meta.pageCount };
   }
 
   /** What every page in the file currently is. */
@@ -516,8 +587,8 @@ export class Database {
       const v = decodeTuple(types, r.data)[idx.columnIndex]!;
       if (v === null) continue;
       if (idx.unique) {
-        const k = String(v);
-        if (seen.has(k)) throw new ConstraintError(`could not create unique index "${idx.name}": key (${idx.column})=(${k}) is duplicated`);
+        const k = encodeValue(type, v).toString('hex'); // canonical bytes, same identity the index itself uses
+        if (seen.has(k)) throw new ConstraintError(`could not create unique index "${idx.name}": key (${idx.column})=(${String(v)}) is duplicated`);
         seen.add(k);
       }
       tree.insert(encodeValue(type, v), r.tid);
@@ -551,6 +622,16 @@ export class Database {
     if (t.system) throw new CatalogError(`cannot modify system table "${name}"`);
     return t;
   }
+}
+
+export interface VerifyReport {
+  ok: boolean;
+  problems: string[];
+  tables: number;
+  indexes: number;
+  rows: number;
+  entries: number;
+  pages: number;
 }
 
 export type PageKind = 'meta' | 'heap' | 'btree-meta' | 'btree' | 'free' | 'unknown';

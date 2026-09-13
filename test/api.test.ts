@@ -7,7 +7,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Database, DatabaseLockedError } from '../src/index.js';
+import { Database, DatabaseLockedError, Heap } from '../src/index.js';
 
 describe('prepared statements + parameters', () => {
   it('positional ? binding via run/get/all', () => {
@@ -80,6 +80,48 @@ describe('transaction(fn)', () => {
     const outer = db.transaction(() => transfer(1, 2, 1));
     expect(() => outer()).toThrow(/within a transaction/);
     expect(db.inTransaction).toBe(false);
+    db.close();
+  });
+
+  it('refuses an async callback instead of committing partial work', async () => {
+    const db = new Database(':memory:');
+    db.exec('CREATE TABLE t (x INT)');
+    const bad = db.transaction(async () => {
+      db.exec('INSERT INTO t VALUES (1)');
+      await Promise.resolve();
+      db.exec('INSERT INTO t VALUES (2)');
+    });
+    expect(() => bad()).toThrow(/must be synchronous/);
+    expect(db.inTransaction).toBe(false);
+    expect(db.query('SELECT * FROM t').rows).toEqual([]); // the first insert was rolled back too
+    db.close();
+  });
+});
+
+describe('verify()', () => {
+  it('reports a clean database and finds planted damage', () => {
+    const db = new Database(':memory:');
+    db.exec('CREATE TABLE t (id INT PRIMARY KEY, s TEXT NOT NULL)');
+    db.exec('CREATE INDEX t_s ON t (s)');
+    const rows: string[] = [];
+    for (let i = 0; i < 1500; i++) rows.push(`(${i}, 's${i % 40}')`);
+    db.exec(`INSERT INTO t VALUES ${rows.join(',')}`);
+    db.exec('DELETE FROM t WHERE id % 3 = 0');
+    db.exec('UPDATE t SET s = \'moved\' WHERE id % 5 = 1');
+    const r = db.verify();
+    expect(r.ok, r.problems.join('; ')).toBe(true);
+    expect(r).toMatchObject({ tables: 1, indexes: 2, rows: 1000 });
+    expect(r.entries).toBe(2000);
+    // plant damage: delete a row behind the index's back
+    const t = db.catalog.mustGetTable('t');
+    db.pager.begin();
+    const heap = new Heap(db.pager, t.rootPage);
+    heap.delete([...heap.scan()][0]!.tid);
+    db.pager.commit();
+    const bad = db.verify();
+    expect(bad.ok).toBe(false);
+    expect(bad.problems.join('\n')).toMatch(/t_pkey.*1 entries point at deleted rows/);
+    expect(bad.problems.join('\n')).toMatch(/t_s.*1 entries point at deleted rows/);
     db.close();
   });
 });

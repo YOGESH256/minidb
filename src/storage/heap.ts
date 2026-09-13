@@ -135,6 +135,19 @@ export class Heap {
     }
   }
 
+  /** Page ids of the chain in order (for integrity checks). Stops on a cycle. */
+  chain(): number[] {
+    const out: number[] = [];
+    const seen = new Set<number>();
+    let pageId: number = this.rootPage;
+    while (pageId !== 0 && !seen.has(pageId)) {
+      seen.add(pageId);
+      out.push(pageId);
+      pageId = this.pager.with(pageId, (f) => f.page.special.readUInt32LE(S_NEXT));
+    }
+    return out;
+  }
+
   /** Free every page of the chain. */
   drop(): void {
     let pageId: number = this.rootPage;
