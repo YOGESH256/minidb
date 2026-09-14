@@ -62,6 +62,37 @@ Roughly half the write throughput and twice the pages: each receipt stores the w
 
 SQLite deliberately does not keep history, does not notify, and does not undo (its update hook and session extension are building blocks, not this). Local-first tools (ElectricSQL, PowerSync, cr-sqlite, Dexie liveQuery, TinyBase) bolt these on from outside with triggers and shadow tables. Owning the engine lets the receipt be written in the same page transaction as the row, with no second source of truth. That is the one advantage a small engine has, and this branch is the test of whether it is worth anything.
 
-## Next step, if the idea holds
+## The demo
 
-A demo app: a task board with live lists, an activity log, "undo last change", and "review what the assistant changed". Two days. Then show it to people. The engine work here is done enough for that.
+`examples/taskboard/` is a task board built entirely on these three features. `npm run demo` (or `npm run demo -- board.db` to keep it).
+
+```
+ todo (1)                          doing (0)                         done (4)
+──────────────────────────────────────────────────────────────────────────────────
+ #5 Follow-up fro… 1pt @assistant                                    #1 Write the protoc… 3pt @yogesh
+                                                                     #2 Measure cold rea… 5pt @yogesh
+5 tasks · last transaction 5
+
+board> assistant
+assistant made transaction 5:
+  "Write the protocol page" status: todo → done
+  "Decide on the rewrite" points: none → 1
+  added "Follow-up from assistant"
+  undo 5   to reject all of it
+
+board> undo
+reverted 7 row changes from transaction 5
+```
+
+What the application code does **not** contain, because the database provides it:
+
+- **No refresh logic.** Each of the three columns and the task count is a `watch()`. Writes never tell the view to update; the callback fires when that query's result actually changes, and not when an unrelated row moves.
+- **No audit table, no event log, no bookkeeping.** `activity()` and `transactions()` are reads of `changes()`; the wording ("status: todo → done") is derived from the receipt's before/after.
+- **No undo stack.** `undo(txn)` is the database's, including the refusal when a human edited a row after the assistant touched it.
+- **No id bookkeeping across restarts** beyond one query, and history continues across the restart.
+
+`examples/taskboard/board.ts` holds the logic with no terminal code, and `test/taskboard.test.ts` (6 tests) drives exactly those functions, including a restart against the fault-injecting file system.
+
+## Next step
+
+Show the demo to people who build local-first or agent-driven apps and find out whether "the database keeps the history and tells you when answers change" is worth switching for. The engine work is done enough for that conversation.

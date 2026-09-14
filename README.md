@@ -123,6 +123,10 @@ db.close();
 
 Values are bound, never interpolated, and a prepared statement is planned once (re-planned automatically after schema changes). A file may have one owner at a time (`<file>.lock`; a second `Database` on the same path throws `DatabaseLockedError`; a lock left by a dead process is taken over). `exec(sql)` runs several statements; `query(sql)` one, returning `{ columns, rows }`.
 
+## Demo (branch `explore/history-watch`)
+
+`npm run demo` opens a task board whose columns are live queries, whose activity log is the database's own change receipts, and whose undo is `db.undo(txn)` with conflict detection. See `docs/HISTORY-WATCH.md`.
+
 ## Direction
 
 `docs/DIRECTION.md` is the single current statement of where this goes. `docs/EDGE-DIRECTION.md` and `docs/archive/` hold the research behind it.

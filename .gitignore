@@ -6,3 +6,6 @@ dist/
 video/out/
 video/.tts-wrapper.sh
 video/*.mp4
+examples/**/*.db
+examples/**/*.db-wal
+examples/**/*.lock
