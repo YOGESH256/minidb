@@ -15,7 +15,7 @@ Single source of truth for product direction. Older research notes live in `docs
    - measure cold open + first query, requests, bytes, memory, p99 against sql.js-httpvfs / wa-sqlite on the same data.
    Go/no-go on the async engine rewrite follows from those numbers.
 
-   **Status 2026-09-14:** prototype built on branch `explore/edge-object-store` (`src/edge/`, 6 tests). Items 1–3 done, numbers in `docs/edge/RESULTS.md`; item 4 (comparison with sql.js-httpvfs / wa-sqlite) not done; item 5 pending on it.
+   **Status 2026-09-14:** prototype built on branch `explore/edge-object-store` (`src/edge/`, 6 tests). All five items done, numbers in `docs/edge/RESULTS.md`. Verdict: **no-go on the async engine rewrite**. Cold reads tie with real SQLite behind a JS VFS, SQLite's file is 43 % smaller, and minidb's scan speed came from fetch concurrency a VFS can copy. The protocol is sound and reusable with any page-based engine. Branch kept as documentation; nothing merged to `main`.
 
 ## What was considered and dropped, with the reason
 

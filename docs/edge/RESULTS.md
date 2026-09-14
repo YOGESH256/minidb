@@ -35,9 +35,26 @@ Cold cost is exactly what the protocol predicts: manifest + leaf chunk + heap ch
 - Lost acknowledgement: the manifest PUT lands but the client sees an error; publish reads the manifest back, finds its own `(version, generation)`, reports success without a second PUT. A genuinely failed PUT still surfaces as an error.
 - Also: snapshot isolation (an open reader keeps its version through a later publish), garbage collection (unreferenced chunks removed; a reader whose chunks were collected fails loudly, never reads wrong data), incremental publish (an in-place update re-uploads one chunk; a moved row re-uploads four: old heap page, new heap page, one leaf per index).
 
-**4. Compare with sql.js-httpvfs / wa-sqlite on the same data.** Not done. Needs those packages plus an HTTP-range shim over the same fake store; roughly a day. Without it the numbers above have no external reference point, only the protocol's own prediction.
+**4. Compare with real SQLite on the same data.** Done (`scripts/_edge-compare-sqlite.mts`). Real SQLite (wa-sqlite 1.0, asyncify build) reads the same 20k-row table through a JavaScript VFS that fetches 64 KB chunks from the same fake store, same latency, same 16-chunk cache. Its file is built by sql.js with 4 KB pages and the same secondary index.
 
-**5. Decide on the async engine.** Open. See below.
+| 30 ms/request | SQLite via JS VFS | minidb reader |
+|---|---|---|
+| Data on the store | **2.3 MB, 36 chunks** | 4.0 MB, 63 chunks + 40 KB manifest |
+| Cold open + pk lookup | 3 requests, 192 KB, p50 105 ms | 3 requests, 168 KB, p50 94 ms |
+| Warm pk lookup | **0.73 requests**, p50 31 ms | 1.14 requests, p50 31 ms |
+| Secondary index, 100 rows | 29 requests, 904 ms (sequential) | 63 requests, **406 ms** (16 concurrent) |
+| Full table scan | 33 requests, 2.1 MB, 1041 ms | 63 requests, 4.0 MB, 456 ms |
+
+At 80 ms/request the same shape: cold 246 vs 266 ms, secondary 2373 vs 1068 ms, scan 2731 vs 1101 ms.
+
+Reading it honestly:
+
+- **Cold point lookup is a tie.** Both need three fetches. minidb's manifest trick saves nothing SQLite does not already get from its page-1 root and a small index.
+- **SQLite's file is 43 % smaller.** Its rows use varints and no length prefixes; ours spend 8 bytes per INT, 4 per TEXT length, 4 per line pointer. Every operation that touches many pages costs minidb ~1.75× the requests and bytes. That is an engine property, fixable (compact encoding) but real today.
+- **minidb's wall-clock wins on multi-chunk operations come from concurrency, not from the engine.** The reader fetches 16 chunks at a time; the SQLite VFS here fetches one page at a time because SQLite's B-tree walk is sequential. A VFS could prefetch neighbouring chunks the same way and close most of that gap.
+- **The simplicity argument stands but is modest**: ~700 lines of plain TypeScript versus a wasm binary plus asyncify plus a VFS; no fetch-of-wasm problems (this script needed a workaround for Node), no worker requirements.
+
+**5. Decide on the async engine.** Recommendation below: **no-go**.
 
 ## What the numbers say
 
@@ -56,4 +73,12 @@ Cold cost is exactly what the protocol predicts: manifest + leaf chunk + heap ch
 
 ## Recommendation
 
-The protocol holds up: publication is safe under the two failure modes the review named, and cold reads cost what the design predicted. What is not yet known is whether that beats the existing SQLite-in-wasm-over-HTTP tools, which is acceptance item 4. Do that comparison (about a day) before spending the weeks on the async engine. If minidb comes out clearly ahead on requests, bytes, or simplicity, proceed; if not, the learning track is the project and this branch stays as documentation of a sound design.
+**Do not convert the engine to async for this direction.** The comparison shows no structural read advantage over real SQLite behind a JavaScript VFS: cold lookups tie, SQLite stores the same data in 57 % of the bytes, and minidb's wall-clock wins on scans are a fetch-concurrency trick any VFS can copy. The publish protocol (chunks, manifest, conditional PUT, lease generations) is sound and tested, but it is a property of the protocol, not the engine: the same protocol could chunk a SQLite file and give real SQLite the same crash-safe, single-writer, object-store deployment. That would be the product, and minidb would not be in it.
+
+What stays valuable from this branch:
+
+- `docs/edge/PROTOCOL.md`: a working, tested design for a database in a bucket, with the two failure modes covered. Reusable with any page-based engine.
+- `src/edge/`: a reference implementation and a fault-injecting S3-like store, useful for tests of any such protocol.
+- A measured answer, which is what the week was for.
+
+Suggested next: merge nothing to `main`; keep the branch as documentation; the learning track (`DIRECTION.md` item 1) is the project. If the storage-density gap bothers you, compact row encoding (varints, 1-byte lengths) is a contained change to `types.ts` and would bring the file to roughly SQLite's size, but it would not change this verdict.
