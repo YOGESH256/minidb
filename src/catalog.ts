@@ -54,15 +54,15 @@ export class CatalogError extends Error {
   }
 }
 
-const SYS_TABLES = '__tables';
-const SYS_COLUMNS = '__columns';
-const SYS_INDEXES = '__indexes';
-const SYS_TABLES_COLS: ColumnDef[] = [
+export const SYS_TABLES = '__tables';
+export const SYS_COLUMNS = '__columns';
+export const SYS_INDEXES = '__indexes';
+export const SYS_TABLES_COLS: ColumnDef[] = [
   { name: 'id', type: 'INT', notNull: true, pk: false },
   { name: 'name', type: 'TEXT', notNull: true, pk: false },
   { name: 'root_page', type: 'INT', notNull: true, pk: false },
 ];
-const SYS_COLUMNS_COLS: ColumnDef[] = [
+export const SYS_COLUMNS_COLS: ColumnDef[] = [
   { name: 'table_id', type: 'INT', notNull: true, pk: false },
   { name: 'ordinal', type: 'INT', notNull: true, pk: false },
   { name: 'name', type: 'TEXT', notNull: true, pk: false },
@@ -70,7 +70,7 @@ const SYS_COLUMNS_COLS: ColumnDef[] = [
   { name: 'not_null', type: 'BOOL', notNull: true, pk: false },
   { name: 'pk', type: 'BOOL', notNull: true, pk: false },
 ];
-const SYS_INDEXES_COLS: ColumnDef[] = [
+export const SYS_INDEXES_COLS: ColumnDef[] = [
   { name: 'id', type: 'INT', notNull: true, pk: false },
   { name: 'name', type: 'TEXT', notNull: true, pk: false },
   { name: 'table_id', type: 'INT', notNull: true, pk: false },

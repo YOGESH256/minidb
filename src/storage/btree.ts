@@ -32,8 +32,8 @@ const S_FLAGS = 10;
 const F_LEAF = 1;
 const F_ROOT = 2;
 
-const ITEM_HEADER = 10; // ptr u32 + tidPage u32 + tidSlot u16
-const META_ROOT = 24; // meta page body: root page id u32
+export const ITEM_HEADER = 10; // ptr u32 + tidPage u32 + tidSlot u16
+export const META_ROOT = 24; // meta page body: root page id u32
 const USABLE = PAGE_SIZE - PAGE_HEADER_SIZE - SPECIAL_SIZE;
 /** Max key: keeps every item under a quarter page so a byte-budgeted split always has a feasible point. */
 export const MAX_KEY_SIZE = Math.floor(USABLE / 4) - ITEM_HEADER - LINE_POINTER_SIZE;
@@ -43,7 +43,7 @@ export type KeyComparator = (a: Buffer, b: Buffer) => number;
 export const TID_MIN: TID = { page: 0, slot: 0 };
 export const TID_MAX: TID = { page: 0xffffffff, slot: 0xffff };
 
-interface Item {
+export interface Item {
   ptr: number;
   tid: TID;
   key: Buffer;
@@ -58,7 +58,7 @@ function encodeItem(it: Item): Buffer {
   return b;
 }
 
-function decodeItem(b: Buffer): Item {
+export function decodeItem(b: Buffer): Item {
   return {
     ptr: b.readUInt32LE(0),
     tid: { page: b.readUInt32LE(4), slot: b.readUInt16LE(8) },
@@ -70,7 +70,7 @@ function compareTid(a: TID, b: TID): number {
   return a.page - b.page || a.slot - b.slot;
 }
 
-interface NodeView {
+export interface NodeView {
   prev: number;
   next: number;
   level: number;
@@ -79,7 +79,7 @@ interface NodeView {
   dataStart: number; // slot of first data item
 }
 
-function readNode(page: Page): NodeView {
+export function readNode(page: Page): NodeView {
   const s = page.special;
   const next = s.readUInt32LE(S_NEXT);
   const hasHighKey = next !== 0;
