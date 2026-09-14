@@ -70,6 +70,17 @@ const SYS_COLUMNS_COLS: ColumnDef[] = [
   { name: 'not_null', type: 'BOOL', notNull: true, pk: false },
   { name: 'pk', type: 'BOOL', notNull: true, pk: false },
 ];
+export const SYS_CHANGES = '__changes';
+/** One receipt per changed row, written in the same transaction as the change. */
+export const SYS_CHANGES_COLS: ColumnDef[] = [
+  { name: 'txn', type: 'INT', notNull: true, pk: false },
+  { name: 'seq', type: 'INT', notNull: true, pk: false },
+  { name: 'table_name', type: 'TEXT', notNull: true, pk: false },
+  { name: 'op', type: 'TEXT', notNull: true, pk: false }, // INSERT | UPDATE | DELETE
+  { name: 'row_key', type: 'TEXT', notNull: false, pk: false }, // JSON of the primary key value, or NULL
+  { name: 'before', type: 'TEXT', notNull: false, pk: false }, // JSON array of the old row, or NULL
+  { name: 'after', type: 'TEXT', notNull: false, pk: false }, // JSON array of the new row, or NULL
+];
 const SYS_INDEXES_COLS: ColumnDef[] = [
   { name: 'id', type: 'INT', notNull: true, pk: false },
   { name: 'name', type: 'TEXT', notNull: true, pk: false },
@@ -102,6 +113,17 @@ export class Catalog {
     p.commit();
   }
 
+  /** Create the __changes heap if the file predates history. Caller holds the transaction. */
+  ensureChangesTable(): TableDef {
+    let meta = this.pager.getMeta();
+    if (meta.changesRoot === 0) {
+      this.pager.setMeta({ changesRoot: Heap.create(this.pager) });
+      meta = this.pager.getMeta();
+      this.tables.set(SYS_CHANGES, { id: -4, name: SYS_CHANGES, rootPage: meta.changesRoot, columns: SYS_CHANGES_COLS, indexes: [], system: true });
+    }
+    return this.tables.get(SYS_CHANGES)!;
+  }
+
   /** (Re)read the catalog from disk. Call after rollback of any DDL. */
   load(): void {
     this.version++;
@@ -121,6 +143,7 @@ export class Catalog {
     this.tables.set(SYS_TABLES, sys(-1, SYS_TABLES, meta.tablesRoot, SYS_TABLES_COLS));
     this.tables.set(SYS_COLUMNS, sys(-2, SYS_COLUMNS, meta.columnsRoot, SYS_COLUMNS_COLS));
     this.tables.set(SYS_INDEXES, sys(-3, SYS_INDEXES, meta.indexesRoot, SYS_INDEXES_COLS));
+    if (meta.changesRoot !== 0) this.tables.set(SYS_CHANGES, sys(-4, SYS_CHANGES, meta.changesRoot, SYS_CHANGES_COLS));
 
     const byId = new Map<number, TableDef>();
     for (const r of this.sysTables.scan()) {

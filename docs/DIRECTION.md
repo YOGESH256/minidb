@@ -24,7 +24,7 @@ Single source of truth for product direction. Older research notes live in `docs
 | Postgres test double | PGlite (real Postgres in wasm) is at 12M+ weekly downloads. |
 | Records store / Node-RED / job-outbox | Real needs, but same competition as above and no reason to pick a young engine over `node:sqlite`. |
 | Crash-safe lowdb replacement | Weakest moat; absorbed by `node:sqlite`. |
-| Local reactive/versioned database (history, watch, undo, sync) | Strongest product idea of the set, but a different product (local-first, months of work, crowded: Electric, PowerSync, Zero, TinyBase). Parked, not rejected. |
+| Local reactive/versioned database (history, watch, undo, sync) | Strongest product idea of the set. **Being tested on branch `explore/history-watch`** (receipts, `watch()`, `undo()` with conflict detection; 12 tests; see `docs/HISTORY-WATCH.md`). Cost: ~half write throughput with history on. Next: a demo app, then user feedback. |
 
 ## Engine facts that constrain every direction
 

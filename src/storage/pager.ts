@@ -46,6 +46,8 @@ const M_TABLES_ROOT = 40;
 const M_COLUMNS_ROOT = 44;
 const M_INDEXES_ROOT = 48;
 const M_NEXT_OBJECT_ID = 52;
+const M_CHANGES_ROOT = 56; // heap root of __changes (0 = history never enabled)
+const M_NEXT_TXN = 60; // next transaction id for change receipts
 const FREE_PAGE_NEXT = 24; // free pages store the next freelist page here
 
 export interface MetaInfo {
@@ -55,6 +57,8 @@ export interface MetaInfo {
   columnsRoot: number;
   indexesRoot: number;
   nextObjectId: number;
+  changesRoot: number;
+  nextTxn: number;
 }
 
 /** One storage-level action, recorded when tracing is on (Database.trace). */
@@ -164,6 +168,8 @@ export class Pager {
     f.buf.writeUInt32LE(1, M_PAGE_COUNT);
     f.buf.writeUInt32LE(0, M_FREELIST_HEAD);
     f.buf.writeUInt32LE(1, M_NEXT_OBJECT_ID);
+    f.buf.writeUInt32LE(0, M_CHANGES_ROOT);
+    f.buf.writeUInt32LE(1, M_NEXT_TXN);
     this.markDirty(f);
     this.release(f);
     this.commit();
@@ -428,6 +434,8 @@ export class Pager {
       columnsRoot: f.buf.readUInt32LE(M_COLUMNS_ROOT),
       indexesRoot: f.buf.readUInt32LE(M_INDEXES_ROOT),
       nextObjectId: f.buf.readUInt32LE(M_NEXT_OBJECT_ID),
+      changesRoot: f.buf.readUInt32LE(M_CHANGES_ROOT),
+      nextTxn: f.buf.readUInt32LE(M_NEXT_TXN) || 1, // files created before this field read as 0
     }));
   }
 
@@ -439,6 +447,8 @@ export class Pager {
       if (patch.columnsRoot !== undefined) f.buf.writeUInt32LE(patch.columnsRoot, M_COLUMNS_ROOT);
       if (patch.indexesRoot !== undefined) f.buf.writeUInt32LE(patch.indexesRoot, M_INDEXES_ROOT);
       if (patch.nextObjectId !== undefined) f.buf.writeUInt32LE(patch.nextObjectId, M_NEXT_OBJECT_ID);
+      if (patch.changesRoot !== undefined) f.buf.writeUInt32LE(patch.changesRoot, M_CHANGES_ROOT);
+      if (patch.nextTxn !== undefined) f.buf.writeUInt32LE(patch.nextTxn, M_NEXT_TXN);
       this.markDirty(f);
     });
   }
