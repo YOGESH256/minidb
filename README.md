@@ -1,6 +1,12 @@
 # minidb
 
-A small Postgres-shaped SQL database engine, from scratch in TypeScript. Zero runtime dependencies.
+[![tests](https://github.com/YOGESH256/minidb/actions/workflows/ci.yml/badge.svg)](https://github.com/YOGESH256/minidb/actions/workflows/ci.yml)
+
+A SQL database engine written from scratch in TypeScript, shaped after PostgreSQL. Slotted pages, a write-ahead log, a buffer pool, a B+tree, a rule-based planner and a Volcano executor, in about 4,000 lines with zero runtime dependencies.
+
+**It is built to be read, not deployed.** Single writer, no MVCC, no `GROUP BY` yet. If you want a database for an application, use SQLite or Postgres. If you want to understand how one works, or to change one and see what happens, this is unusually approachable: every layer maps to a real PostgreSQL structure, and the tests prove the parts that are easy to claim and hard to do.
+
+It survives `kill -9` mid-commit. That is tested six times a run, on Linux and macOS, on Node 20, 22 and 24.
 
 ```
 $ npx tsx src/repl.ts demo.db
@@ -82,6 +88,8 @@ Tested three ways: an in-process fault-injecting file system that drops or tears
 | `DELETE` all 50k rows (spills past the pool) | ~22 s |
 | Single-row autocommit transaction | 200–280/s (bounded by `F_FULLFSYNC`, same as Postgres with `fsync=on`) |
 
+Measured on an M-series Mac. The `UPDATE` and `DELETE` figures are **known issues, not targets**: both spill past the buffer pool and re-read their own spill, and neither has been optimised. They are left here because a learning project that hides its slow paths is worth less than one that points at them.
+
 ## Deliberate limits (v1)
 
 - Single writer, no concurrency, no MVCC. Reads inside a transaction see its own writes.
@@ -95,7 +103,8 @@ Tested three ways: an in-process fault-injecting file system that drops or tears
 
 ```
 npm install
-npm test            # vitest, 39 tests incl. crash recovery, review regressions, the ladder
+npm test            # vitest: unit tests per layer, SQL end-to-end, review regressions,
+                    # fault-injected recovery, a real-file SIGKILL test, and the ladder
 npm run typecheck
 npm run build       # dist/
 npx tsx src/repl.ts some.db
@@ -123,14 +132,21 @@ db.close();
 
 Values are bound, never interpolated, and a prepared statement is planned once (re-planned automatically after schema changes). A file may have one owner at a time (`<file>.lock`; a second `Database` on the same path throws `DatabaseLockedError`; a lock left by a dead process is taken over). `exec(sql)` runs several statements; `query(sql)` one, returning `{ columns, rows }`.
 
-## Demo (branch `explore/history-watch`)
+## Experiments
 
-`npm run demo` opens a task board whose columns are live queries, whose activity log is the database's own change receipts, and whose undo is `db.undo(txn)` with conflict detection. See `docs/HISTORY-WATCH.md`.
+Each of these lives on its own branch and is an attempt to find out what the engine's unusual parts are good for. None is merged to `main`.
 
-## The custodian (branch `explore/custodian`)
-
-`npm run demo:custodian`. Something that lives with the data and notices things — a query that keeps scanning a whole table, an index nothing uses, a column that quietly stopped being filled, a row two writers are fighting over. It reports; it never changes anything. See `docs/CUSTODIAN.md`.
+- **Live queries, change history and undo** (`explore/history-watch`). `npm run demo` opens a task board whose columns are live queries, whose activity log is the database's own change receipts, and whose undo is `db.undo(txn)` with conflict detection. See [`docs/HISTORY-WATCH.md`](docs/HISTORY-WATCH.md).
+- **The custodian** (`explore/custodian`). `npm run demo:custodian`. Something that lives with the data and notices things: a query that keeps scanning a whole table, an index nothing uses, a column that quietly stopped being filled, a row two writers are fighting over. It reports; it never changes anything. See [`docs/CUSTODIAN.md`](docs/CUSTODIAN.md).
+- **Experiments on disposable copies.** `npm run demo:experiment` exercises the first agent experiment harness: fresh copies, transaction replay, measured costs, result and constraint comparisons, and a JSONL observations log. An agent can drive it through a JSONL tool interface. This phase supplies the harness; the demo is scripted and microVM isolation is not implemented yet. See [the experiment protocol](docs/EXPERIMENTS.md).
+- **SQL over object storage** (`explore/edge-object-store`). Chunks, a manifest and conditional publish, measured against real SQLite behind a JavaScript VFS. The measurements said no; [`docs/edge/RESULTS.md`](docs/edge/RESULTS.md) says why.
 
 ## Direction
 
-`docs/DIRECTION.md` is the single current statement of where this goes. `docs/EDGE-DIRECTION.md` and `docs/archive/` hold the research behind it.
+[`docs/DIRECTION.md`](docs/DIRECTION.md) is the single current statement of where this goes. [`docs/research/`](docs/research/) holds nine rounds of looking for a use case, each with its verdict and its sources, including the ones that came back negative and why.
+
+## How it was built
+
+Written with heavy use of AI coding tools, over about two weeks, by someone who had not built a database before. That is worth saying plainly because it is the first thing people ask. What the tools did not supply was the decisions: the page layout follows `bufpage.h`, the B+tree follows nbtree's README, and the WAL follows PostgreSQL's record and LSN discipline, because those were read first and are cited in [`docs/research-storage.md`](docs/research-storage.md) and [`docs/research-sql.md`](docs/research-sql.md).
+
+Two code reviews found fourteen real bugs between them, including a rollback that lost a committed page and a B+tree split that could fail mid-way. Both reviews and every fix are in [`docs/CODE-REVIEW-2026-09-09.md`](docs/CODE-REVIEW-2026-09-09.md) and [`docs/CODE-REVIEW-2026-09-14.md`](docs/CODE-REVIEW-2026-09-14.md). Corrections are welcome, especially from people who know PostgreSQL internals.
