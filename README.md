@@ -147,6 +147,8 @@ Each of these lives on its own branch and is an attempt to find out what the eng
 
 ## How it was built
 
-Written with heavy use of AI coding tools, over about two weeks, by someone who had not built a database before. That is worth saying plainly because it is the first thing people ask. What the tools did not supply was the decisions: the page layout follows `bufpage.h`, the B+tree follows nbtree's README, and the WAL follows PostgreSQL's record and LSN discipline, because those were read first and are cited in [`docs/research-storage.md`](docs/research-storage.md) and [`docs/research-sql.md`](docs/research-sql.md).
+Written over about two weeks, with heavy use of AI coding tools. That is worth saying plainly because it is the first thing people ask.
+
+It was written by someone who runs PostgreSQL in production daily — replicas, connection pools, query plans, index choices, the occasional 3am incident — but had never built a storage engine. That shows in the shape of it: the engine mirrors PostgreSQL closely because the goal was to understand the system already being operated, from the inside. The page layout follows `bufpage.h`, the B+tree follows nbtree's README, the WAL follows PostgreSQL's record and LSN discipline, and each was read before it was written, cited in [`docs/research-storage.md`](docs/research-storage.md) and [`docs/research-sql.md`](docs/research-sql.md).
 
 Two code reviews found fourteen real bugs between them, including a rollback that lost a committed page and a B+tree split that could fail mid-way. Both reviews and every fix are in [`docs/CODE-REVIEW-2026-09-09.md`](docs/CODE-REVIEW-2026-09-09.md) and [`docs/CODE-REVIEW-2026-09-14.md`](docs/CODE-REVIEW-2026-09-14.md). Corrections are welcome, especially from people who know PostgreSQL internals.
