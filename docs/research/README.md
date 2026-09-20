@@ -1,6 +1,6 @@
 # Research log
 
-Six rounds, over a week, asking one question: is there a use case for this engine? Every round was desk research — GitHub issues, download counts, forum threads. **No user was ever interviewed.** That is the method's main weakness and it should be read with that in mind.
+This log records the engine research and the subsequent search for a use case. The use-case research is desk research — documentation, GitHub issues, download counts, and forum threads — sometimes accompanied by local workload probes. **No potential minidb user has been interviewed.** That is the method's main weakness and it should be read with that in mind.
 
 | # | Round | Question | Verdict |
 |---|---|---|---|
@@ -11,6 +11,8 @@ Six rounds, over a week, asking one question: is there a use case for this engin
 | 5 | [../edge/RESULTS.md](../edge/RESULTS.md) (branch `explore/edge-object-store`) | SQL over S3/R2 from edge runtimes? | **No.** Ties with SQLite on cold reads; SQLite stores the same data in 57% of the bytes; our scan wins came from fetch concurrency any VFS can copy. The protocol itself is sound and engine-independent. |
 | 6 | [2026-09-14-history-watch-undo.md](2026-09-14-history-watch-undo.md) | History, live queries and undo as database features? | **Mostly no.** SQLite's session extension already does undo with conflict detection; audit is a solved trigger problem. Only live queries are genuinely missing, and the AI-agent framing is falsified 15 builders to 1 asker. |
 | 7 | [2026-09-14-observability.md](2026-09-14-observability.md) | Anything in observability or telemetry? | **No**, on all five angles. Also corrected a bad number quoted in round 6. |
+| 8 | [2026-09-15-catalog-cleanup.md](2026-09-15-catalog-cleanup.md), [five-export size gate](2026-09-15-catalog-size-gate.md) | Local catalog cleanup with selective batch undo? | **Stop before prototyping.** The synthetic probe passed, but history prevents import/edit for 69.35% of MUSE book records and 52.34% of OAPEN records. Small journal/title records mostly fit. Demand for a restricted field-only editor and tolerance of whole-row conflicts remain unproven. |
+| 9 | [2026-09-20-autonomous-ai-database.md](2026-09-20-autonomous-ai-database.md) | Autonomous / AI-operated database, with the engine's smallness as the asset? | **No** for a new engine. Nobody argues source legibility helps an agent; DBA-Bench scores agents 17.9% vs a human DBA's 93.4% *with* rich observability already supplied, locating the failure in reasoning not signal. Agents-as-database-users is real (Neon: 80% of databases agent-created, ~$1B acquisition) but buys provisioning, branching and undo on Postgres. One unclaimed angle: minidb as an evaluation substrate where causal explanations are mechanically checkable. |
 
 ## What the rounds got wrong
 
