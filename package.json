@@ -42,7 +42,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.check.json",
-    "demo": "tsx examples/taskboard/cli.ts"
+    "demo": "tsx examples/taskboard/cli.ts",
+    "demo:custodian": "tsx examples/custodian-demo.ts"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

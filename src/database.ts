@@ -17,10 +17,11 @@ import { Heap, type TID } from './storage/heap.js';
 import { Catalog, CatalogError, SYS_CHANGES, SYS_CHANGES_COLS, type TableDef, type IndexDef } from './catalog.js';
 import { parse } from './sql/parser.js';
 import type { Stmt, SelectStmt, InsertStmt, UpdateStmt, DeleteStmt, Expr } from './sql/ast.js';
-import { planSelect, openTree } from './sql/planner.js';
+import { planSelect, openTree, exprText } from './sql/planner.js';
 import { Scope, compile, type ParamSlot } from './sql/expr.js';
 import { collect, type PlanNode } from './sql/executor.js';
 import { encodeTuple, decodeTuple, encodeValue, decodeValue, compareValues, TypeError_, typeOfValue, type Value } from './types.js';
+import { Custodian, findChurn, type Finding, type CustodianOptions } from './custodian.js';
 
 export interface QueryResult {
   command: string;
@@ -39,6 +40,11 @@ export class ConstraintError extends Error {
 export interface DatabaseOptions extends PagerOptions {
   /** Where files live. Defaults to real disk for Node (via src/index.js) or memory for ':memory:'. */
   fs?: FileSystem;
+  /**
+   * Keep a custodian: something that watches every statement, remembers what
+   * the work cost, and reports what it notices. It never changes anything.
+   */
+  custodian?: boolean | CustodianOptions;
   /**
    * Record a receipt for every changed row (what changed, in which transaction,
    * from which previous values) in the same transaction as the change. Enables
@@ -227,6 +233,8 @@ export class Database {
   /** A statement failed inside BEGIN: only ROLLBACK (or COMMIT, which rolls back) is accepted. */
   private aborted = false;
   private readonly historyOn: boolean;
+  /** Present when the custodian option is on. */
+  readonly custodian: Custodian | null;
   /** Transaction id assigned to the open transaction on its first recorded change. */
   private txnId: number | null = null;
   private txnSeq = 0;
@@ -242,6 +250,7 @@ export class Database {
     opts: DatabaseOptions = {},
   ) {
     this.historyOn = opts.history ?? false;
+    this.custodian = opts.custodian ? new Custodian(typeof opts.custodian === 'object' ? opts.custodian : {}) : null;
     const fs = opts.fs ?? (path === ':memory:' ? memoryFileSystem() : opts.openFile ? null : getDefaultFileSystem());
     this.unlock = fs ? fs.lock(path) : () => {};
     try {
@@ -289,7 +298,18 @@ export class Database {
         return {
           run: () => {
             const p = plan();
+            if (!this.custodian) {
+              const rows = collect(p.root).map((r) => r.v);
+              return { command: 'SELECT', columns: p.columns, rows, rowCount: rows.length };
+            }
+            // Pages touched is the honest measure of work; wall-clock on a
+            // shared laptop is noise. Two counter reads is the whole overhead.
+            const pagesBefore = this.pager.stats.hits + this.pager.stats.misses;
+            const t0 = performance.now();
             const rows = collect(p.root).map((r) => r.v);
+            const ms = performance.now() - t0;
+            const pages = this.pager.stats.hits + this.pager.stats.misses - pagesBefore;
+            this.custodian.recordQuery(sqlTextOf(stmt), p.paths, pages, rows.length, ms);
             return { command: 'SELECT', columns: p.columns, rows, rowCount: rows.length };
           },
         };
@@ -432,6 +452,54 @@ export class Database {
       }
     }
     return { ok: problems.length === 0, problems, tables, indexes, rows, entries, pages: meta.pageCount };
+  }
+
+  /**
+   * What the custodian has noticed: missing and unused indexes, columns whose
+   * null rate moved, rows two writers are fighting over, history outgrowing
+   * its data. Reports only; never changes anything.
+   */
+  notice(): Finding[] {
+    if (!this.custodian) throw new TypeError_('notice() needs the custodian option');
+    // Selectivity needs real row counts, so this walks each table. Worth it:
+    // notice() is called on demand, not on the query path.
+    const tables = this.catalog
+      .allTables()
+      .filter((t) => !t.system)
+      .map((t) => ({
+        name: t.name,
+        indexes: t.indexes.map((i) => ({ name: i.name, column: i.column })),
+        rows: [...new Heap(this.pager, t.rootPage).scan()].length,
+      }));
+    const known: Parameters<Custodian['report']>[0] = { tables };
+    const changesTable = this.catalog.getTable('__changes');
+    if (changesTable) {
+      known.historyRows = [...new Heap(this.pager, changesTable.rootPage).scan()].length;
+      known.dataRows = tables.reduce((n, t) => n + t.rows, 0);
+    }
+    const out = this.custodian.report(known);
+    if (this.historyOn) out.push(...findChurn(this.changes()));
+    const rank: Record<Finding['severity'], number> = { warning: 0, suggestion: 1, info: 2 };
+    return out.sort((a, b) => rank[a.severity] - rank[b.severity]);
+  }
+
+  /**
+   * Sample how empty a column is right now. Call it periodically; the
+   * custodian compares the first sample with the latest to spot a shift.
+   */
+  sampleColumn(table: string, column: string): void {
+    if (!this.custodian) return;
+    const t = this.catalog.mustGetTable(table);
+    const ci = t.columns.findIndex((c) => c.name === column);
+    if (ci < 0) throw new TypeError_(`column "${column}" does not exist`);
+    const types = t.columns.map((c) => c.type);
+    let n = 0;
+    let nulls = 0;
+    for (const r of new Heap(this.pager, t.rootPage).scan()) {
+      n++;
+      if (decodeTuple(types, r.data)[ci] === null) nulls++;
+    }
+    this.custodian.recordNullSample(table, column, n, nulls);
   }
 
   /** What every page in the file currently is. */
@@ -607,6 +675,7 @@ export class Database {
         exprs.forEach((c, i) => (values[targets[i]!] = c.eval([])));
         this.writeRow(t, heap, values, null);
       }
+      this.custodian?.recordWrite(t.name, rows.length);
       return { ...result('INSERT'), rowCount: rows.length };
     };
   }
@@ -635,6 +704,7 @@ export class Database {
         for (const s of sets) values[s.ci] = s.c.eval(row.v);
         this.writeRow(t, heap, values, { tid: row.tid!, old: row.v });
       }
+      this.custodian?.recordWrite(t.name, targets.length);
       return { ...result('UPDATE'), rowCount: targets.length };
     };
   }
@@ -650,6 +720,7 @@ export class Database {
         heap.delete(row.tid!);
         this.recordChange(t, 'DELETE', row.v, null);
       }
+      this.custodian?.recordWrite(t.name, targets.length);
       return { ...result('DELETE'), rowCount: targets.length };
     };
   }
@@ -990,6 +1061,18 @@ function summarize(events: TraceEvent[]): TraceSummary {
     fsyncs: events.filter((e) => e.op === 'fsync').length,
     indexHops: events.filter((e) => e.op === 'index').length,
   };
+}
+
+/** A stable text for a parsed statement, so repeated runs aggregate together. */
+function sqlTextOf(stmt: Stmt): string {
+  if (stmt.kind !== 'select') return stmt.kind;
+  const cols = stmt.columns.map((c) => (c.kind === 'star' ? (c.table ? `${c.table}.*` : '*') : exprText(c.expr))).join(', ');
+  const from = stmt.from ? ` FROM ${stmt.from.name}${stmt.from.alias ? ' ' + stmt.from.alias : ''}` : '';
+  const joins = stmt.joins.map((j) => ` JOIN ${j.table.name}${j.table.alias ? ' ' + j.table.alias : ''} ON ${exprText(j.on)}`).join('');
+  const where = stmt.where ? ` WHERE ${exprText(stmt.where)}` : '';
+  const order = stmt.orderBy.length ? ` ORDER BY ${stmt.orderBy.map((o) => exprText(o.expr) + (o.desc ? ' DESC' : '')).join(', ')}` : '';
+  const limit = stmt.limit !== undefined ? ` LIMIT ${stmt.limit}` : '';
+  return `SELECT ${cols}${from}${joins}${where}${order}${limit}`;
 }
 
 function decodeChange(r: Value[]): ChangeRecord {

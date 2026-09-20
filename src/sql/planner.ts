@@ -56,6 +56,24 @@ import {
 export interface SelectPlan {
   root: ProjectNode;
   columns: string[];
+  /** How each table in the query was reached. The custodian reads this. */
+  paths: AccessPath[];
+}
+
+/**
+ * One table's access method, as chosen by the planner. `filterColumns` are
+ * columns the query restricted on that no index served — the evidence for
+ * "an index here would have helped".
+ */
+export interface AccessPath {
+  table: string;
+  access: 'seq' | 'index';
+  /** Index used, when access is 'index'. */
+  index?: string;
+  /** Columns an index answered (equality or range bounds). */
+  indexedColumns: string[];
+  /** Columns filtered after the scan, i.e. paid for by reading rows. */
+  filterColumns: string[];
 }
 
 export function openTree(pager: Pager, idx: IndexDef, keyType: DataType): BTree {
@@ -76,6 +94,7 @@ export function planSelect(stmt: SelectStmt, catalog: Catalog, pager: Pager, par
   // All conjuncts (WHERE + every INNER JOIN ON) with the set of tables each references.
   const preds = [...conjuncts(stmt.where), ...stmt.joins.flatMap((j) => conjuncts(j.on))].map((e) => ({ e, refs: scope.refs(e), used: false }));
 
+  const paths: AccessPath[] = [];
   let root: PlanNode;
   if (tableRefs.length === 0) {
     root = new OneRowNode();
@@ -86,9 +105,9 @@ export function planSelect(stmt: SelectStmt, catalog: Catalog, pager: Pager, par
       root = new FilterNode(root, compileBool(w, scope, 'WHERE', params), exprText(w));
     }
   } else {
-    root = planScan(0, scope, defs, preds, pager, params);
+    root = planScan(0, scope, defs, preds, pager, params, paths);
     for (let i = 1; i < tableRefs.length; i++) {
-      const inner = planScan(i, scope, defs, preds, pager, params);
+      const inner = planScan(i, scope, defs, preds, pager, params, paths);
       const joinPreds = preds.filter((p) => !p.used && [...p.refs].every((r) => r <= i) && p.refs.has(i));
       for (const p of joinPreds) p.used = true;
       const q = andAll(joinPreds.map((p) => p.e));
@@ -131,7 +150,7 @@ export function planSelect(stmt: SelectStmt, catalog: Catalog, pager: Pager, par
   }
   if (stmt.limit !== undefined || stmt.offset !== undefined) root = new LimitNode(root, stmt.limit, stmt.offset ?? 0);
 
-  return { root: new ProjectNode(root, exprs, columns), columns };
+  return { root: new ProjectNode(root, exprs, columns), columns, paths };
 }
 
 /** PG rules: an integer literal is a 1-based select-list ordinal; a bare name matching an output alias refers to it; else a FROM-scope expression. */
@@ -163,7 +182,7 @@ function subScope(scope: Scope, n: number): Scope {
  * become an Index Scan; other i-only predicates become a Filter under it.
  * Mixed predicates that were not consumed as bounds are left for the join.
  */
-function planScan(i: number, scope: Scope, defs: TableDef[], preds: { e: Expr; refs: Set<number>; used: boolean }[], pager: Pager, params?: ParamSlot): PlanNode {
+function planScan(i: number, scope: Scope, defs: TableDef[], preds: { e: Expr; refs: Set<number>; used: boolean }[], pager: Pager, params?: ParamSlot, report?: AccessPath[]): PlanNode {
   const table = defs[i]!;
   const entry = scope.entries[i]!;
   const heap = new Heap(pager, table.rootPage);
@@ -216,10 +235,13 @@ function planScan(i: number, scope: Scope, defs: TableDef[], preds: { e: Expr; r
   }
 
   let node: PlanNode;
+  const path: AccessPath = { table: table.name, access: best ? 'index' : 'seq', indexedColumns: [], filterColumns: [] };
   if (best) {
     for (const p of best.consumed) p.used = true;
     const keyType = table.columns[best.idx.columnIndex]!.type;
     node = new IndexScanNode(heap, openTree(pager, best.idx, keyType), keyType, types, best.bounds, label, best.idx.name, best.text.join(' AND '));
+    path.index = best.idx.name;
+    path.indexedColumns = [table.columns[best.idx.columnIndex]!.name];
   } else {
     node = new SeqScanNode(heap, types, label);
   }
@@ -228,9 +250,38 @@ function planScan(i: number, scope: Scope, defs: TableDef[], preds: { e: Expr; r
   if (localPreds.length) {
     for (const p of localPreds) p.used = true;
     const w = andAll(localPreds.map((p) => p.e))!;
+    path.filterColumns = restrictedColumns(w, table);
     node = new FilterNode(node, compileBool(w, local, 'WHERE', params), exprText(w));
   }
+  report?.push(path);
   return node;
+}
+
+/**
+ * Columns of `table` that an expression restricts with a comparison an index
+ * could serve. `status = 'open'` counts; `NOT done` and `a + b > 1` do not.
+ */
+function restrictedColumns(e: Expr, table: TableDef): string[] {
+  const out = new Set<string>();
+  const walk = (x: Expr): void => {
+    if (x.kind !== 'binary') return;
+    if (x.op === 'AND' || x.op === 'OR') {
+      walk(x.left);
+      walk(x.right);
+      return;
+    }
+    if (!['=', '<', '<=', '>', '>='].includes(x.op)) return;
+    for (const [a, b] of [
+      [x.left, x.right],
+      [x.right, x.left],
+    ] as const) {
+      if (a.kind !== 'column') continue;
+      if (b.kind === 'column') continue; // column-to-column: a join predicate, not an index opportunity
+      if (table.columns.some((c) => c.name === a.name)) out.add(a.name);
+    }
+  };
+  walk(e);
+  return [...out];
 }
 
 /** Match `col op other` or `other op col` where col is column `ci` of scope entry `i`. */

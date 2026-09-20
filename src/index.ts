@@ -4,6 +4,8 @@ import { nodeFileSystem } from './storage/node-file-io.js';
 setDefaultFileSystem(nodeFileSystem);
 
 export { Database, Statement, ConstraintError, type QueryResult, type DatabaseOptions, type Params, type RowObject, type TraceSummary, type VerifyReport, type PageInfo, type ChangeRecord, type WatchCallback, UndoConflictError } from './database.js';
+export { Custodian, shapeOf, findChurn, type Finding, type ShapeStat, type CustodianOptions, type Severity } from './custodian.js';
+export type { AccessPath, SelectPlan } from './sql/planner.js';
 export { DatabaseLockedError, nodeFileSystem } from './storage/node-file-io.js';
 export { memoryFileSystem, type FileSystem, type FileIO } from './storage/file-io.js';
 export { Pager, CorruptionError, type TraceEvent } from './storage/pager.js';

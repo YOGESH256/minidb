@@ -127,6 +127,10 @@ Values are bound, never interpolated, and a prepared statement is planned once (
 
 `npm run demo` opens a task board whose columns are live queries, whose activity log is the database's own change receipts, and whose undo is `db.undo(txn)` with conflict detection. See `docs/HISTORY-WATCH.md`.
 
+## The custodian (branch `explore/custodian`)
+
+`npm run demo:custodian`. Something that lives with the data and notices things — a query that keeps scanning a whole table, an index nothing uses, a column that quietly stopped being filled, a row two writers are fighting over. It reports; it never changes anything. See `docs/CUSTODIAN.md`.
+
 ## Direction
 
 `docs/DIRECTION.md` is the single current statement of where this goes. `docs/EDGE-DIRECTION.md` and `docs/archive/` hold the research behind it.
