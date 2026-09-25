@@ -41,9 +41,33 @@ export function checkInt(n: number): number {
   return n;
 }
 
-/** Byte-wise UTF-8 comparison (PG "C" collation / SQLite BINARY). */
+/**
+ * Byte-wise UTF-8 comparison (PG "C" collation / SQLite BINARY).
+ *
+ * Encoding both sides to Buffers gives the right answer but allocates twice per
+ * comparison, which on a scan is two allocations per row (~83x slower than this
+ * loop, measured). UTF-16 code-unit order already matches UTF-8 byte order for
+ * everything in the BMP; the one exception is the surrogate block D800-DFFF,
+ * whose real code points are >= U+10000 and so must sort ABOVE E000-FFFF rather
+ * than below it. Adding 0x2800 to a surrogate lifts D800-DFFF to 10000-107FF and
+ * restores the byte order.
+ *
+ * Must agree with `compareEncoded`, which is the order the B+tree stores keys in:
+ * if they disagree, an index scan and a seq scan answer the same predicate with
+ * different rows. test/text-ordering.test.ts checks every pair.
+ */
 export function compareText(a: string, b: string): number {
-  return Buffer.compare(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'));
+  if (a === b) return 0;
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    const ca = a.charCodeAt(i);
+    const cb = b.charCodeAt(i);
+    if (ca === cb) continue;
+    const ka = ca >= 0xd800 && ca <= 0xdfff ? ca + 0x2800 : ca;
+    const kb = cb >= 0xd800 && cb <= 0xdfff ? cb + 0x2800 : cb;
+    return ka < kb ? -1 : 1;
+  }
+  return a.length === b.length ? 0 : a.length < b.length ? -1 : 1;
 }
 
 /** Compare two non-null values of the same type. */

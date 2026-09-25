@@ -192,6 +192,20 @@ export function compile(expr: Expr, scope: Scope, params?: ParamSlot): Compiled 
           if (t !== null && t !== 'INT') throw new TypeError_(`operator does not exist: ${t} ${expr.op} ${t}`);
           const op = expr.op;
           const loose = l.type === null || r.type === null; // a parameter is involved: check at run time
+          // Same reason as the comparison case below: pick the arithmetic once, here.
+          const apply: (a: number, b: number) => number =
+            op === '+' ? (a, b) => checkInt(a + b)
+            : op === '-' ? (a, b) => checkInt(a - b)
+            : op === '*' ? (a, b) => checkInt(a * b)
+            : op === '/'
+              ? (a, b) => {
+                  if (b === 0) throw new TypeError_('division by zero');
+                  return Math.trunc(a / b);
+                }
+              : (a, b) => {
+                  if (b === 0) throw new TypeError_('division by zero');
+                  return a % b;
+                };
           return {
             type: 'INT',
             isConst,
@@ -201,20 +215,7 @@ export function compile(expr: Expr, scope: Scope, params?: ParamSlot): Compiled 
               if (a === null || b === null) return null;
               if (loose && (typeof a !== 'number' || typeof b !== 'number'))
                 throw new TypeError_(`operator does not exist: ${typeOfValue(a)} ${op} ${typeOfValue(b)}`);
-              switch (op) {
-                case '+':
-                  return checkInt(a + b);
-                case '-':
-                  return checkInt(a - b);
-                case '*':
-                  return checkInt(a * b);
-                case '/':
-                  if (b === 0) throw new TypeError_('division by zero');
-                  return Math.trunc(a / b);
-                case '%':
-                  if (b === 0) throw new TypeError_('division by zero');
-                  return a % b;
-              }
+              return apply(a, b);
             },
           };
         }
@@ -222,6 +223,30 @@ export function compile(expr: Expr, scope: Scope, params?: ParamSlot): Compiled 
           const t = unify(l.type, r.type, expr.op);
           const op = expr.op;
           const loose = l.type === null || r.type === null;
+          // `op` is settled here, at compile time. Switching on it inside eval would
+          // redo that decision once per row for the length of the scan.
+          const test: (c: number) => boolean =
+            op === '=' ? (c) => c === 0
+            : op === '!=' ? (c) => c !== 0
+            : op === '<' ? (c) => c < 0
+            : op === '<=' ? (c) => c <= 0
+            : op === '>' ? (c) => c > 0
+            : (c) => c >= 0;
+          // Both sides typed at bind time (everything but a bare parameter): `unify`
+          // already proved they match, so the row path is compare-and-test only.
+          if (!loose) {
+            const type = t!;
+            return {
+              type: 'BOOL',
+              isConst,
+              eval: (row) => {
+                const a = l.eval(row);
+                const b = r.eval(row);
+                if (a === null || b === null) return null;
+                return test(compareValues(type, a, b));
+              },
+            };
+          }
           return {
             type: 'BOOL',
             isConst,
@@ -230,24 +255,9 @@ export function compile(expr: Expr, scope: Scope, params?: ParamSlot): Compiled 
               const b = r.eval(row);
               if (a === null || b === null) return null;
               const ta = typeOfValue(a)!;
-              if (loose && (ta !== typeOfValue(b) || (t !== null && ta !== t)))
+              if (ta !== typeOfValue(b) || (t !== null && ta !== t))
                 throw new TypeError_(`operator does not exist: ${t ?? ta} ${op} ${typeOfValue(b)}`);
-              const c = compareValues(t ?? ta, a, b);
-              switch (op) {
-                case '=':
-                  return c === 0;
-                case '!=':
-                  return c !== 0;
-                case '<':
-                  return c < 0;
-                case '<=':
-                  return c <= 0;
-                case '>':
-                  return c > 0;
-                case '>=':
-                  return c >= 0;
-              }
-              return null;
+              return test(compareValues(t ?? ta, a, b));
             },
           };
         }
